@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+npm-debug.log
+
+# Binaries & Large portable tools (Keep repo clean for GitHub)
+bin/git/
+bin/cloudflared.exe
+bin/*.zip
+
+# Temporary & session files
+data/public_url.txt
+
+# OS Files
+.DS_Store
+Thumbs.db

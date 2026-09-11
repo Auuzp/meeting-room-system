@@ -1,0 +1,196 @@
+﻿<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>คู่มือการใช้งาน - ระบบจองห้องประชุมภายในองค์กร</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+      line-height: 1.7;
+      color: #1e293b;
+      background: #f8fafc;
+      margin: 0;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 920px;
+      margin: auto;
+      background: #ffffff;
+      padding: 48px;
+      border-radius: 20px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+      border: 1px solid #e2e8f0;
+    }
+    h1 {
+      color: #0f172a;
+      font-size: 28px;
+      border-bottom: 2px solid #ff6a00;
+      padding-bottom: 12px;
+      margin-top: 0;
+    }
+    h2 {
+      color: #1e293b;
+      font-size: 20px;
+      margin-top: 36px;
+      border-left: 4px solid #ff6a00;
+      padding-left: 12px;
+    }
+    h3 { font-size: 16px; color: #334155; margin-top: 24px; }
+    p, li { font-size: 15px; color: #475569; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 14px;
+      color: #c2410c;
+    }
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 16px 20px;
+      border-radius: 12px;
+      overflow-x: auto;
+      font-size: 14px;
+    }
+    .box-tip {
+      background: #eff6ff;
+      border-left: 4px solid #3b82f6;
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin: 18px 0;
+      font-size: 14px;
+    }
+    .box-important {
+      background: #fff7ed;
+      border-left: 4px solid #ff6a00;
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin: 18px 0;
+      font-size: 14px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #e2e8f0;
+      padding: 12px 14px;
+      text-align: left;
+    }
+    th { background: #f8fafc; font-weight: 700; }
+    .print-btn {
+      float: right;
+      background: #ff6a00;
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    @media print {
+      .print-btn { display: none; }
+      body { padding: 0; background: #fff; }
+      .container { box-shadow: none; border: none; padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <button class="print-btn" onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
+    <h1>🏢 คู่มือระบบจองห้องประชุมภายในองค์กร</h1>
+    <p style="color:#64748b; font-size:14px;">ระบบ Meeting Room Booking Web Application (รองรับการรัน Local + ให้อุปกรณ์ภายนอกล็อกอินเข้าใช้งานได้)</p>
+
+    <h2>บทที่ 1: การเปิดใช้งานระบบ (เลือกได้ 2 รูปแบบ)</h2>
+    <p>ระบบสามารถรันได้ 2 โหมดตามความต้องการขององค์กร:</p>
+
+    <h3>โหมดที่ 1: รันใช้งานเฉพาะในออฟฟิศ (Local Wi-Fi Only)</h3>
+    <ul>
+      <li>เหมาะสำหรับ: ใช้งานเฉพาะพนักงานที่ต่อสายแลนหรือ Wi-Fi ของออฟฟิศ</li>
+      <li><b>วิธีเปิด:</b> ดับเบิลคลิกไฟล์ <code><b>START-SYSTEM.bat</b></code></li>
+      <li>เข้าใช้งานผ่าน: <code>http://localhost:3000</code> หรือ <code>http://&lt;IP-เครื่องโฮสต์&gt;:3000</code></li>
+    </ul>
+
+    <h3>โหมดที่ 2: รัน Local แต่เปิดให้คนภายนอก/เน็ตมือถือ 4G/5G/WFH เข้าใช้งานได้ด้วย ⭐ [แนะนำ]</h3>
+    <ul>
+      <li>เหมาะสำหรับ: พนักงานที่อยู่นอกออฟฟิศ, ผู้บริหารที่ออกไปพบลูกค้า, พนักงาน Work From Home หรือใช้เน็ตมือถือ</li>
+      <li><b>วิธีเปิด:</b> ดับเบิลคลิกไฟล์ <code><b>START-ONLINE.bat</b></code></li>
+      <li><b>สิ่งที่ระบบทำให้อัตโนมัติ:</b>
+        <ol>
+          <li>รัน Local Web Server และฐานข้อมูล SQLite บนเครื่องคอมพิวเตอร์ของคุณ (ข้อมูลอยู่ในเครื่อง 100%)</li>
+          <li>เชื่อมต่อระบบความปลอดภัย <b>Cloudflare Secure Tunnel</b> อัตโนมัติ (ไม่ต้องตั้งค่า Router)</li>
+          <li>สร้างลิงก์ <b>Public Internet URL (HTTPS ปลอดภัย)</b> เช่น: <code>https://xxxx.trycloudflare.com</code></li>
+          <li>แสดงภาพ <b>QR Code</b> ให้พนักงานที่อยู่นอกออฟฟิศใช้กล้องมือถือสแกนเข้าใช้ได้ทันทีจากทุกที่ทั่วโลก!</li>
+        </ol>
+      </li>
+    </ul>
+
+    <div class="box-tip">
+      💡 <b>การปิดระบบ:</b> ดับเบิลคลิกที่ไฟล์ <code>STOP-SYSTEM.bat</code> หรือปิดหน้าต่าง Command Prompt ได้ทันที
+    </div>
+
+    <h2>บทที่ 2: การเข้าใช้งานจากอุปกรณ์ต่างๆ</h2>
+    <h3>2.1 ผ่านคอมพิวเตอร์ในออฟฟิศ (Wi-Fi องค์กร)</h3>
+    <p>เปิดเว็บเบราว์เซอร์เข้าที่: <code>http://&lt;IP-เครื่องโฮสต์&gt;:3000</code> (เช่น <code>http://192.168.1.50:3000</code>)</p>
+
+    <h3>2.2 ผ่านมือถือ (สมาร์ตโฟนเน็ต 4G/5G หรืออยู่นอกออฟฟิศ)</h3>
+    <ol>
+      <li>ที่หน้าจอคอมพิวเตอร์ กดปุ่ม <b>"📱 มือถือ"</b> บนแถบเมนูด้านบน</li>
+      <li>เลือกแท็บ <b>"🌐 นอกออฟฟิศ (4G/5G/WFH)"</b></li>
+      <li>ใช้กล้องมือถือสแกนภาพ <b>QR Code</b> หรือคัดลอกลิงก์ส่งเข้ากลุ่ม LINE บริษัท ให้พนักงานเปิดเข้าใช้ได้ทันที</li>
+    </ol>
+
+    <h3>2.3 โหมดจอแท็บเล็ตติดหน้าห้องประชุม (Room Display Kiosk)</h3>
+    <p>นำ iPad หรือแท็บเล็ตไปติดไว้หน้าห้องประชุม แล้วเปิดไปที่: <code>http://&lt;IP-เครื่องโฮสต์&gt;:3000/kiosk.html</code> หน้าจอจะแสดงสถานะสีเขียว (ว่าง) / สีแดง (กำลังประชุม) พร้อมปุ่มจองด่วน 15, 30, 60 นาที</p>
+
+    <h2>บทที่ 3: คู่มือสำหรับพนักงานทั่วไป</h2>
+    <h3>3.1 การยืนยันตัวตนพนักงาน (Employee Verification)</h3>
+    <p>แม้จะเปิดให้เข้าจากภายนอกได้ แต่ <b>เฉพาะพนักงานที่มีสิทธิ์ของบริษัทเท่านั้นที่จองได้</b></p>
+    <ul>
+      <li>กดปุ่ม <b>"เข้าสู่ระบบ"</b> มุมขวาบน แล้วกรอก <b>รหัสพนักงาน</b> (เช่น <code>EMP101</code>) หรือพิมพ์ค้นหาชื่อตนเอง</li>
+      <li>เมื่อเข้าสู่ระบบแล้ว ชื่อผู้จองและแผนกจะถูกนำไปกรอกลงฟอร์มให้อัตโนมัติ</li>
+    </ul>
+
+    <h3>3.2 ขั้นตอนการจองห้องประชุม</h3>
+    <ol>
+      <li>กดปุ่มสีส้ม <b>"+ จองห้องประชุมใหม่"</b> (หรือกด "จองห้องนี้" จากการ์ดห้องประชุม)</li>
+      <li>เลือก <b>ห้องประชุม</b> ที่ต้องการใช้งาน (ห้อง A, B, C, D)</li>
+      <li>เลือก <b>วันที่</b> และ <b>เวลาเริ่มต้น - สิ้นสุด</b> (เช่น 13:00 - 14:30 น.)</li>
+      <li>กรอกหัวข้อการประชุม และรหัส PIN 4 หลัก (ค่าเริ่มต้น 1234 หรือตั้งเองได้)</li>
+      <li>กดปุ่ม <b>"ยืนยันการจองห้อง"</b></li>
+    </ol>
+
+    <div class="box-important">
+      🚨 <b>การป้องกันการจองซ้ำ:</b><br>
+      หากมีคนจองห้อง A เวลา 13.00 น. ไว้แล้ว คนอื่นที่พยายามเข้ามาจองห้องเดียวกันในเวลาดังกล่าว <b>จะไม่สามารถจองซ้ำได้เด็ดขาด</b> ระบบจะปฏิเสธทันทีพร้อมแจ้งเตือนชื่อคนจองเดิมและช่วงเวลาที่ติดจอง
+    </div>
+
+    <h3>3.3 การยกเลิกการจอง</h3>
+    <p>ไปที่ตารางการจอง กดปุ่ม <b>"ยกเลิก"</b> ที่รายการของตนเอง และกรอกรหัส PIN 4 หลักที่ตั้งไว้ตอนจอง</p>
+
+    <h2>บทที่ 4: คู่มือสำหรับผู้ดูแลระบบ (Admin Console)</h2>
+    <p>เข้าสู่ระบบจัดการได้ที่: <code>/admin.html</code> หรือกดปุ่ม <b>"⚙️ Admin"</b> บนแถบเมนู (รหัส Admin PIN: <code>8888</code>)</p>
+    <ul>
+      <li><b>กำหนดห้องประชุม:</b> เพิ่มห้องใหม่, แก้ไขชื่อห้อง, กำหนดความจุ, สถานที่ตั้ง, และอุปกรณ์ประจำห้อง</li>
+      <li><b>กำหนดสิทธิ์พนักงาน:</b> เพิ่มรายชื่อพนักงานที่มีสิทธิ์ใช้, กดปุ่ม <code>⛔ ระงับ</code> เพื่อระงับสิทธิ์ชั่วคราว, หรือกด <code>✅ เปิดสิทธิ์</code> เพื่อคืนสิทธิ์ให้พนักงาน</li>
+      <li><b>ส่งออกรายงาน:</b> กดปุ่ม <b>"📥 ส่งออก Excel"</b> เพื่อดาวน์โหลดไฟล์สรุปการจองเป็นภาษาไทยเปิดใน Excel ได้ทันที</li>
+    </ul>
+
+    <h2>บทที่ 5: ความปลอดภัยและการตั้งค่าโดเมนบริษัท</h2>
+    <h3>5.1 ความปลอดภัยของระบบ</h3>
+    <ul>
+      <li><b>ไม่มีการเปิด Port ใน Router:</b> จึงปลอดภัยจากการถูกเจาะระบบจากแฮกเกอร์บนอินเทอร์เน็ต</li>
+      <li><b>เข้ารหัสแบบ HTTPS:</b> ปลอดภัย มีใบรับรอง SSL มาตรฐานสากล</li>
+      <li><b>ข้อมูลเก็บอยู่ที่เครื่องของคุณ 100%:</b> ฐานข้อมูล SQLite อยู่บนเครื่องของคุณ ไม่ถูกส่งไปเก็บบนคลาวด์ภายนอก</li>
+    </ul>
+
+    <h3>5.2 การใช้ชื่อโดเมนถาวรของบริษัท (เช่น meeting.mycompany.com)</h3>
+    <p>หากองค์กรมีชื่อโดเมนอยู่แล้ว สามารถเชื่อมต่อ Cloudflare Tunnel กับโดเมนของบริษัทได้ฟรี พนักงานจะสามารถเข้าใช้งานผ่าน <code>https://meeting.mycompany.com</code> ได้ตลอดเวลาโดยชื่อ URL ไม่เปลี่ยน!</p>
+  </div>
+</body>
+</html>

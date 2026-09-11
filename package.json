@@ -1,0 +1,24 @@
+﻿{
+  "name": "meeting-room-system",
+  "version": "1.0.0",
+  "description": "ระบบจองห้องประชุมภายในองค์กร ใช้งานได้ทุกอุปกรณ์ ทำงานบน Local Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/api.test.js"
+  },
+  "keywords": [
+    "meeting-room",
+    "booking",
+    "local-network",
+    "responsive",
+    "sqlite"
+  ],
+  "author": "Organization Team",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "qrcode": "^1.5.4"
+  }
+}

@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ผู้ดูแลระบบ - กำหนดห้องประชุมและสิทธิ์พนักงาน</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <style>
+    .admin-auth-box {
+      max-width: 420px;
+      margin: 60px auto;
+      text-align: center;
+    }
+    .color-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    .table-container {
+      overflow-x: auto;
+      margin-top: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: var(--bg);
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .amenities-checkbox-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: normal;
+      cursor: pointer;
+      background: var(--bg);
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .checkbox-label input {
+      width: auto;
+      margin: 0;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status-badge.active {
+      background: #ecfdf5;
+      color: #065f46;
+      border: 1px solid #a7f3d0;
+    }
+    .status-badge.inactive {
+      background: #fef2f2;
+      color: #991b1b;
+      border: 1px solid #fecaca;
+    }
+    .admin-nav-tabs {
+      display: flex;
+      gap: 8px;
+      background: var(--card);
+      padding: 6px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .admin-tab-btn {
+      flex: 1;
+      padding: 12px 18px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .admin-tab-btn.active {
+      background: var(--primary);
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(255, 106, 0, 0.25);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="dash-navbar" style="background:transparent; border:none;">
+        <div class="dash-nav-inner" style="height:auto; padding:16px 0;">
+          <div class="brand-group">
+            <div class="brand-icon" style="background:var(--primary);">🛠️</div>
+            <div class="brand-title">
+              <h1 style="font-size:20px;">Admin Console (ผู้ดูแลระบบ)</h1>
+              <p>กำหนดชื่อห้องประชุม และกำหนดรายชื่อพนักงานที่มีสิทธิ์ใช้งาน</p>
+            </div>
+          </div>
+          <div class="nav-actions">
+            <a href="/download/meeting-room-system-ready.zip" class="btn btn-secondary btn-sm" title="ดาวน์โหลดไฟล์ทั้งหมด (.ZIP)">📥 โหลดไฟล์ระบบ (.ZIP)</a>
+            <a href="/" class="btn btn-secondary btn-sm">⬅️ กลับหน้าหลัก Dashboard</a>
+            <a href="/manual.html" class="btn btn-secondary btn-sm" target="_blank">📖 คู่มือการใช้งาน</a>
+            <a href="/kiosk.html" class="btn btn-secondary btn-sm" target="_blank">📺 จอหน้าห้อง</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <!-- 1. Auth Gate -->
+      <div id="authGate" class="card admin-auth-box">
+        <div class="card-head" style="border:none; justify-content:center; text-align:center;">
+          <h3 style="font-size:22px;">🔒 ยืนยันสิทธิ์ Admin</h3>
+        </div>
+        <div class="card-body">
+          <p style="color:var(--muted); font-size:14px; margin-bottom:18px;">
+            กรุณากรอกรหัส Master Admin PIN เพื่อเข้าสู่หน้าการจัดการระบบ<br>
+            <small>(รหัสตั้งต้นระบบ: <b>8888</b>)</small>
+          </p>
+          <div class="field">
+            <input type="password" id="adminPinInput" placeholder="รหัส PIN 4 หลัก" style="text-align:center; font-size:22px; letter-spacing:6px;" autofocus />
+          </div>
+          <div id="authError" style="color:var(--danger); font-size:13px; margin-bottom:14px; display:none;"></div>
+          <button class="btn btn-primary" style="width:100%;" onclick="verifyAdmin()">เข้าสู่ระบบจัดการ</button>
+        </div>
+      </div>
+
+      <!-- 2. Admin Panel (Show after authenticated) -->
+      <div id="adminPanel" style="display:none; margin-top:10px;">
+        
+        <!-- Navigation Tabs -->
+        <div class="admin-nav-tabs">
+          <button class="admin-tab-btn active" id="tabRoomsHeader" onclick="switchAdminTab('rooms')">
+            <span>🏢</span> กำหนดห้องประชุม (Rooms)
+          </button>
+          <button class="admin-tab-btn" id="tabEmployeesHeader" onclick="switchAdminTab('employees')">
+            <span>👥</span> กำหนดรายชื่อพนักงานที่มีสิทธิ์ใช้ (Allowed Employees)
+          </button>
+          <button class="admin-tab-btn" id="tabReportsHeader" onclick="switchAdminTab('reports')">
+            <span>📊</span> รายงานและการส่งออก (Reports)
+          </button>
+        </div>
+
+        <div id="adminNotice" class="notice"></div>
+
+        <!-- TAB 1: กำหนดชื่อห้องประชุม (Manage Rooms) -->
+        <section class="card admin-tab-content" id="tabContentRooms">
+          <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:18px 24px; border-bottom:1px solid var(--border);">
+            <div>
+              <h3 style="font-size:17px; margin:0;">🏢 กำหนดชื่อห้องและรายละเอียดห้องประชุม</h3>
+              <p style="font-size:13px; color:var(--muted); margin-top:2px;">เพิ่ม แก้ไข หรือลบห้องประชุม กำหนดความจุ สถานที่ตั้ง และอุปกรณ์</p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="openRoomModal()">+ กำหนดห้องประชุมใหม่</button>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>รหัสห้อง</th>
+                    <th>ชื่อห้องประชุม</th>
+                    <th>ความจุ</th>
+                    <th>สถานที่ / ชั้น</th>
+                    <th>อุปกรณ์ประจำห้อง</th>
+                    <th style="text-align:right;">การจัดการ</th>
+                  </tr>
+                </thead>
+                <tbody id="roomTableBody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 2: กำหนดรายชื่อพนักงานที่มีสิทธิ์ใช้ (Manage Allowed Employees) -->
+        <section class="card admin-tab-content" id="tabContentEmployees" style="display:none;">
+          <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:18px 24px; border-bottom:1px solid var(--border);">
+            <div>
+              <h3 style="font-size:17px; margin:0;">👥 กำหนดรายชื่อพนักงานที่มีสิทธิ์จองห้องประชุม</h3>
+              <p style="font-size:13px; color:var(--muted); margin-top:2px;">พนักงานที่มีรายชื่อและมีสถานะ "อนุญาตให้ใช้" เท่านั้น ถึงจะสามารถจองห้องประชุมได้</p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="openEmpModal()">+ เพิ่มพนักงานที่มีสิทธิ์ใช้งาน</button>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>รหัสพนักงาน</th>
+                    <th>ชื่อ - นามสกุล</th>
+                    <th>แผนก / ฝ่าย</th>
+                    <th>ตำแหน่ง</th>
+                    <th>สิทธิ์การใช้งาน</th>
+                    <th style="text-align:right;">การจัดการ</th>
+                  </tr>
+                </thead>
+                <tbody id="empTableBody">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 3: รายงานและการส่งออก (Reports) -->
+        <section class="card admin-tab-content" id="tabContentReports" style="display:none;">
+          <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:18px 24px; border-bottom:1px solid var(--border);">
+            <div>
+              <h3 style="font-size:17px; margin:0;">📊 สรุปรายงานการจองห้องประชุม</h3>
+              <p style="font-size:13px; color:var(--muted); margin-top:2px;">ดาวน์โหลดไฟล์ข้อมูลรายการจองทั้งหมดเพื่อนำไปทำสรุปรายงานใน Excel</p>
+            </div>
+            <a href="/api/bookings/export" class="btn btn-primary btn-sm" style="text-decoration:none;">
+              📥 ดาวน์โหลดไฟล์ Excel / CSV
+            </a>
+          </div>
+          <div class="card-body" style="padding:24px;">
+            <p style="font-size:14px; color:var(--muted); line-height:1.6;">
+              ไฟล์รายงานจะประกอบด้วยข้อมูล: รหัสการจอง, รหัสห้อง, ชื่อห้องประชุม, หัวข้อการประชุม, ชื่อผู้จอง, แผนก, วันที่และเวลาเริ่มต้น-สิ้นสุด, สถานะการจอง, และหมายเหตุ รองรับการแสดงผลภาษาไทยสมบูรณ์ (UTF-8 BOM)
+            </p>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- Modal: กำหนด/แก้ไขห้องประชุม -->
+  <div class="modal-overlay" id="roomModal">
+    <div class="modal-box" style="max-width:560px;">
+      <div class="modal-header">
+        <h3 id="roomModalTitle">🏢 กำหนดห้องประชุม</h3>
+        <button class="modal-close" onclick="closeRoomModal()">&times;</button>
+      </div>
+      <form id="roomForm" onsubmit="saveRoom(event)">
+        <div class="modal-content">
+          <input type="hidden" id="editRoomId" />
+          
+          <div class="two-col">
+            <div class="field">
+              <label for="roomCode">รหัสห้อง (Room Code) *</label>
+              <input id="roomCode" placeholder="เช่น ROOM-A, ROOM-B" required />
+            </div>
+            <div class="field">
+              <label for="roomColor">สีประจำห้อง</label>
+              <input id="roomColor" type="color" value="#ff6a00" style="height:44px; padding:2px;" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="roomName">กำหนดชื่อห้องประชุม *</label>
+            <input id="roomName" placeholder="เช่น ห้องประชุม A (Boardroom ใหญ่)" required />
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="roomCapacity">ความจุ (จำนวนคน) *</label>
+              <input id="roomCapacity" type="number" min="1" max="500" value="10" required />
+            </div>
+            <div class="field">
+              <label for="roomLocation">สถานที่ / ชั้น</label>
+              <input id="roomLocation" placeholder="เช่น ชั้น 3 อาคารหลัก" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label>อุปกรณ์และสิ่งอำนวยความสะดวกในห้อง</label>
+            <div class="amenities-checkbox-grid">
+              <label class="checkbox-label">
+                <input type="checkbox" name="amenity" value="smart_tv" checked /> 🖥️ Smart TV
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="amenity" value="projector" /> 📽️ โปรเจกเตอร์
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="amenity" value="mic" checked /> 🎙️ ไมค์ลอย
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="amenity" value="video_conf" checked /> 📹 Video Conference
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="amenity" value="whiteboard" checked /> 📝 ไวท์บอร์ด
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="amenity" value="wifi" checked /> 📶 Wi-Fi
+              </label>
+            </div>
+          </div>
+
+          <div id="roomModalError" style="color:var(--danger); font-size:13px; margin-bottom:10px; display:none;"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeRoomModal()">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary">บันทึกข้อมูลห้องประชุม</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: กำหนดรายชื่อพนักงานที่มีสิทธิ์ใช้ -->
+  <div class="modal-overlay" id="empModal">
+    <div class="modal-box" style="max-width:500px;">
+      <div class="modal-header">
+        <h3 id="empModalTitle">👥 กำหนดพนักงานที่มีสิทธิ์ใช้งาน</h3>
+        <button class="modal-close" onclick="closeEmpModal()">&times;</button>
+      </div>
+      <form id="empForm" onsubmit="saveEmployee(event)">
+        <div class="modal-content">
+          <input type="hidden" id="editEmpId" />
+
+          <div class="field">
+            <label for="empCodeInput">รหัสพนักงาน (Employee ID) *</label>
+            <input id="empCodeInput" placeholder="เช่น EMP109" required />
+          </div>
+
+          <div class="field">
+            <label for="empNameInput">ชื่อ - นามสกุลพนักงาน *</label>
+            <input id="empNameInput" placeholder="เช่น กิตติศักดิ์ พูลสวัสดิ์" required />
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="empDeptInput">แผนก / สังกัด *</label>
+              <input id="empDeptInput" placeholder="เช่น ฝ่าย IT, ฝ่ายบริหาร" required />
+            </div>
+            <div class="field">
+              <label for="empPosInput">ตำแหน่ง</label>
+              <input id="empPosInput" placeholder="เช่น Developer, Manager" />
+            </div>
+          </div>
+
+          <div class="field" id="empStatusContainer" style="display:none;">
+            <label for="empActiveSelect">สิทธิ์การใช้งานระบบ</label>
+            <select id="empActiveSelect">
+              <option value="1">🟢 มีสิทธิ์ใช้งาน (Active)</option>
+              <option value="0">🔴 ระงับสิทธิ์ชั่วคราว (Suspended)</option>
+            </select>
+          </div>
+
+          <div id="empModalError" style="color:var(--danger); font-size:13px; margin-bottom:10px; display:none;"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeEmpModal()">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary">บันทึกข้อมูลพนักงาน</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let adminPin = localStorage.getItem('admin_pin') || sessionStorage.getItem('admin_pin') || '';
+    let rooms = [];
+    let employees = [];
+
+    function getValidAdminPin() {
+      if (!adminPin) {
+        adminPin = localStorage.getItem('admin_pin') || sessionStorage.getItem('admin_pin') || '';
+      }
+      if (!adminPin) {
+        adminPin = prompt('กรุณาระบุรหัส Admin PIN เพื่อยืนยัน (ค่าตั้งต้นคือ 8888):', '8888') || '';
+        if (adminPin) {
+          sessionStorage.setItem('admin_pin', adminPin);
+          localStorage.setItem('admin_pin', adminPin);
+        }
+      }
+      return adminPin;
+    }
+
+    const amenityMap = {
+      smart_tv: '🖥️ TV',
+      projector: '📽️ Projector',
+      mic: '🎙️ ไมค์',
+      video_conf: '📹 Conf',
+      whiteboard: '📝 Whiteboard',
+      wifi: '📶 Wi-Fi'
+    };
+
+    function showAdminNotice(msg, type = 'ok') {
+      const el = document.getElementById('adminNotice');
+      el.textContent = msg;
+      el.className = `notice show ${type}`;
+      setTimeout(() => { el.className = 'notice'; }, 4000);
+    }
+
+    async function verifyAdmin() {
+      const pin = document.getElementById('adminPinInput').value.trim();
+      try {
+        const res = await fetch('/api/admin/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin })
+        });
+
+        if (res.ok) {
+          adminPin = pin;
+          sessionStorage.setItem('admin_pin', pin);
+          localStorage.setItem('admin_pin', pin);
+          document.getElementById('authGate').style.display = 'none';
+          document.getElementById('adminPanel').style.display = 'block';
+          loadAdminRooms();
+          loadAdminEmployees();
+        } else {
+          const data = await res.json();
+          const errEl = document.getElementById('authError');
+          errEl.textContent = data.message || 'รหัส Admin PIN ไม่ถูกต้อง';
+          errEl.style.display = 'block';
+        }
+      } catch (err) {
+        const errEl = document.getElementById('authError');
+        errEl.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ: ' + err.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    if (adminPin) {
+      document.getElementById('adminPinInput').value = adminPin;
+      verifyAdmin();
+    }
+
+    // Switch Tabs
+    function switchAdminTab(tab) {
+      document.querySelectorAll('.admin-tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.admin-tab-content').forEach(c => c.style.display = 'none');
+
+      if (tab === 'rooms') {
+        document.getElementById('tabRoomsHeader').classList.add('active');
+        document.getElementById('tabContentRooms').style.display = 'block';
+      } else if (tab === 'employees') {
+        document.getElementById('tabEmployeesHeader').classList.add('active');
+        document.getElementById('tabContentEmployees').style.display = 'block';
+      } else if (tab === 'reports') {
+        document.getElementById('tabReportsHeader').classList.add('active');
+        document.getElementById('tabContentReports').style.display = 'block';
+      }
+    }
+
+    // 1. MANAGE ROOMS
+    async function loadAdminRooms() {
+      const res = await fetch('/api/rooms');
+      rooms = await res.json();
+      renderRoomTable();
+    }
+
+    function renderRoomTable() {
+      const tbody = document.getElementById('roomTableBody');
+      tbody.innerHTML = rooms.map(r => `
+        <tr>
+          <td><b>${r.code || '-'}</b></td>
+          <td>
+            <span class="color-dot" style="background:${r.color || '#ff6a00'}"></span>
+            <b>${r.name}</b>
+          </td>
+          <td>${r.capacity} ที่นั่ง</td>
+          <td>${r.location || '-'}</td>
+          <td>
+            ${(r.amenities || []).map(a => `<span class="amenity-tag" style="margin-right:4px;">${amenityMap[a] || a}</span>`).join('')}
+          </td>
+          <td style="text-align:right;">
+            <button class="btn btn-secondary btn-sm" style="margin-right:6px;" onclick="editRoom(${r.id})">✏️ แก้ไข</button>
+            <button class="btn btn-secondary btn-sm" style="color:var(--danger); border-color:#fecaca;" onclick="deleteRoom(${r.id}, '${r.name}')">ลบ</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function openRoomModal() {
+      document.getElementById('editRoomId').value = '';
+      document.getElementById('roomModalTitle').textContent = '🏢 กำหนดห้องประชุมใหม่';
+      document.getElementById('roomCode').value = 'ROOM-' + String.fromCharCode(65 + rooms.length);
+      document.getElementById('roomName').value = '';
+      document.getElementById('roomCapacity').value = '10';
+      document.getElementById('roomLocation').value = '';
+      document.getElementById('roomColor').value = '#ff6a00';
+      document.querySelectorAll('input[name="amenity"]').forEach(cb => cb.checked = true);
+      document.getElementById('roomModalError').style.display = 'none';
+      document.getElementById('roomModal').classList.add('active');
+    }
+
+    function closeRoomModal() {
+      document.getElementById('roomModal').classList.remove('active');
+    }
+
+    function editRoom(id) {
+      const room = rooms.find(r => r.id === id);
+      if (!room) return;
+
+      document.getElementById('editRoomId').value = room.id;
+      document.getElementById('roomModalTitle').textContent = '✏️ แก้ไขข้อมูลห้องประชุม';
+      document.getElementById('roomCode').value = room.code || '';
+      document.getElementById('roomName').value = room.name;
+      document.getElementById('roomCapacity').value = room.capacity;
+      document.getElementById('roomLocation').value = room.location || '';
+      document.getElementById('roomColor').value = room.color || '#ff6a00';
+
+      const currentAmenities = room.amenities || [];
+      document.querySelectorAll('input[name="amenity"]').forEach(cb => {
+        cb.checked = currentAmenities.includes(cb.value);
+      });
+
+      document.getElementById('roomModalError').style.display = 'none';
+      document.getElementById('roomModal').classList.add('active');
+    }
+
+    async function saveRoom(e) {
+      e.preventDefault();
+      const currentPin = getValidAdminPin();
+      if (!currentPin) {
+        alert('กรุณาระบุรหัส Admin PIN');
+        return;
+      }
+
+      const id = document.getElementById('editRoomId').value;
+      const code = document.getElementById('roomCode').value.trim();
+      const name = document.getElementById('roomName').value.trim();
+      const capacity = Number(document.getElementById('roomCapacity').value);
+      const location = document.getElementById('roomLocation').value.trim();
+      const color = document.getElementById('roomColor').value;
+      const amenities = Array.from(document.querySelectorAll('input[name="amenity"]:checked')).map(cb => cb.value);
+
+      const payload = { admin_pin: currentPin, code, name, capacity, location, color, amenities };
+      const url = id ? `/api/rooms/${id}` : '/api/rooms';
+      const method = id ? 'PUT' : 'POST';
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          const errEl = document.getElementById('roomModalError');
+          errEl.textContent = data.message || data.error || 'บันทึกข้อมูลไม่สำเร็จ';
+          errEl.style.display = 'block';
+          return;
+        }
+
+        closeRoomModal();
+        showAdminNotice(data.message || 'บันทึกข้อมูลห้องเรียบร้อย');
+        loadAdminRooms();
+      } catch (err) {
+        const errEl = document.getElementById('roomModalError');
+        errEl.textContent = 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์: ' + err.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    async function deleteRoom(id, name) {
+      if (!confirm(`ต้องการลบห้องประชุม "${name}" ใช่หรือไม่?`)) return;
+      const currentPin = getValidAdminPin();
+
+      const res = await fetch(`/api/rooms/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_pin: currentPin })
+      });
+
+      if (res.ok) {
+        showAdminNotice('ลบห้องประชุมเรียบร้อยแล้ว');
+        loadAdminRooms();
+      } else {
+        alert('ไม่สามารถลบห้องได้');
+      }
+    }
+
+    // 2. MANAGE ALLOWED EMPLOYEES
+    async function loadAdminEmployees() {
+      try {
+        const res = await fetch(`/api/admin/employees?admin_pin=${adminPin}`);
+        employees = await res.json();
+        renderEmployeeTable();
+      } catch (err) {
+        console.error('Error loading employees:', err);
+      }
+    }
+
+    function renderEmployeeTable() {
+      const tbody = document.getElementById('empTableBody');
+      if (!employees || employees.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:30px; color:var(--muted);">ยังไม่มีข้อมูลพนักงานในระบบ</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = employees.map(emp => {
+        const isActive = emp.is_active !== 0;
+        const statusClass = isActive ? 'active' : 'inactive';
+        const statusLabel = isActive ? '🟢 มีสิทธิ์ใช้งาน' : '🔴 ระงับสิทธิ์';
+
+        return `
+          <tr>
+            <td><code><b>${emp.emp_code}</b></code></td>
+            <td><b>${emp.name}</b></td>
+            <td>${emp.department || '-'}</td>
+            <td>${emp.position || '-'}</td>
+            <td>
+              <span class="status-badge ${statusClass}">${statusLabel}</span>
+            </td>
+            <td style="text-align:right;">
+              <button class="btn btn-secondary btn-sm" style="margin-right:6px;" onclick="toggleEmpActive(${emp.id}, ${isActive ? 0 : 1})">
+                ${isActive ? '⛔ ระงับ' : '✅ เปิดสิทธิ์'}
+              </button>
+              <button class="btn btn-secondary btn-sm" style="margin-right:6px;" onclick="editEmployee(${emp.id})">
+                ✏️ แก้ไข
+              </button>
+              <button class="btn btn-secondary btn-sm" style="color:var(--danger); border-color:#fecaca;" onclick="deleteEmployee(${emp.id}, '${emp.name}')">
+                ลบ
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function openEmpModal() {
+      document.getElementById('editEmpId').value = '';
+      document.getElementById('empModalTitle').textContent = '👥 เพิ่มพนักงานที่มีสิทธิ์ใช้งาน';
+      document.getElementById('empCodeInput').value = 'EMP' + Math.floor(109 + employees.length);
+      document.getElementById('empNameInput').value = '';
+      document.getElementById('empDeptInput').value = '';
+      document.getElementById('empPosInput').value = '';
+      document.getElementById('empStatusContainer').style.display = 'none';
+      document.getElementById('empModalError').style.display = 'none';
+      document.getElementById('empModal').classList.add('active');
+    }
+
+    function closeEmpModal() {
+      document.getElementById('empModal').classList.remove('active');
+    }
+
+    function editEmployee(id) {
+      const emp = employees.find(e => e.id === id);
+      if (!emp) return;
+
+      document.getElementById('editEmpId').value = emp.id;
+      document.getElementById('empModalTitle').textContent = '✏️ แก้ไขข้อมูลและสิทธิ์พนักงาน';
+      document.getElementById('empCodeInput').value = emp.emp_code;
+      document.getElementById('empNameInput').value = emp.name;
+      document.getElementById('empDeptInput').value = emp.department || '';
+      document.getElementById('empPosInput').value = emp.position || '';
+      document.getElementById('empActiveSelect').value = String(emp.is_active !== 0 ? 1 : 0);
+      document.getElementById('empStatusContainer').style.display = 'block';
+      document.getElementById('empModalError').style.display = 'none';
+      document.getElementById('empModal').classList.add('active');
+    }
+
+    async function saveEmployee(e) {
+      e.preventDefault();
+      const currentPin = getValidAdminPin();
+      if (!currentPin) {
+        alert('กรุณาระบุรหัส Admin PIN');
+        return;
+      }
+
+      const id = document.getElementById('editEmpId').value;
+      const emp_code = document.getElementById('empCodeInput').value.trim();
+      const name = document.getElementById('empNameInput').value.trim();
+      const department = document.getElementById('empDeptInput').value.trim();
+      const position = document.getElementById('empPosInput').value.trim();
+      const is_active = id ? Number(document.getElementById('empActiveSelect').value) : 1;
+
+      const payload = { admin_pin: currentPin, emp_code, name, department, position, is_active };
+      const url = id ? `/api/admin/employees/${id}` : '/api/admin/employees';
+      const method = id ? 'PUT' : 'POST';
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          const errEl = document.getElementById('empModalError');
+          errEl.textContent = data.message || data.error || 'บันทึกข้อมูลไม่สำเร็จ';
+          errEl.style.display = 'block';
+          return;
+        }
+
+        closeEmpModal();
+        showAdminNotice(data.message || 'บันทึกข้อมูลพนักงานเรียบร้อย');
+        loadAdminEmployees();
+      } catch (err) {
+        const errEl = document.getElementById('empModalError');
+        errEl.textContent = 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์: ' + err.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    async function toggleEmpActive(id, newActive) {
+      const currentPin = getValidAdminPin();
+      const res = await fetch(`/api/admin/employees/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_pin: currentPin, is_active: newActive })
+      });
+
+      if (res.ok) {
+        showAdminNotice(newActive === 1 ? 'เปิดสิทธิ์การใช้งานพนักงานเรียบร้อย' : 'ระงับสิทธิ์พนักงานเรียบร้อย');
+        loadAdminEmployees();
+      } else {
+        alert('เกิดข้อผิดพลาดในการปรับเปลี่ยนสิทธิ์');
+      }
+    }
+
+    async function deleteEmployee(id, name) {
+      if (!confirm(`ต้องการลบพนักงาน "${name}" ออกจากระบบสิทธิ์ใช่หรือไม่?`)) return;
+      const currentPin = getValidAdminPin();
+
+      const res = await fetch(`/api/admin/employees/${id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_pin: currentPin })
+      });
+
+      if (res.ok) {
+        showAdminNotice('ลบพนักงานออกจากระบบสิทธิ์เรียบร้อยแล้ว');
+        loadAdminEmployees();
+      } else {
+        alert('ไม่สามารถลบข้อมูลพนักงานได้');
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeRoomModal();
+        closeEmpModal();
+      }
+    });
+  </script>
+</body>
+</html>
+

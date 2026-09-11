@@ -1,0 +1,163 @@
+﻿/* Timeline Grid Layout */
+.timeline-container {
+  overflow-x: auto;
+  position: relative;
+  background: var(--card);
+  border-radius: var(--radius-sm);
+  padding: 16px 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.timeline-header {
+  display: flex;
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  z-index: 10;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.timeline-room-col-header {
+  width: 160px;
+  min-width: 160px;
+  padding: 0 16px;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+}
+
+.timeline-hours {
+  display: flex;
+  flex: 1;
+  min-width: 720px;
+}
+
+.timeline-hour {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border-left: 1px dashed var(--border);
+  padding: 2px 0;
+}
+
+.timeline-body {
+  position: relative;
+  min-width: 880px;
+}
+
+.timeline-row {
+  display: flex;
+  align-items: center;
+  height: 64px;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  transition: background-color 0.15s;
+}
+
+.timeline-row:hover {
+  background-color: rgba(255, 106, 0, 0.02);
+}
+
+.timeline-room-label {
+  width: 160px;
+  min-width: 160px;
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.timeline-room-label b {
+  font-size: 13px;
+  color: var(--dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-room-label span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.timeline-slots {
+  flex: 1;
+  height: 100%;
+  position: relative;
+  display: flex;
+}
+
+.timeline-slot-hour {
+  flex: 1;
+  height: 100%;
+  border-left: 1px dashed var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.timeline-slot-hour:hover {
+  background: rgba(255, 106, 0, 0.06);
+}
+
+.timeline-booking-block {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  border-radius: 8px;
+  padding: 4px 10px;
+  color: #fff;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  cursor: pointer;
+  z-index: 5;
+  transition: transform 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.timeline-booking-block:hover {
+  transform: scale(1.02);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  z-index: 15;
+}
+
+.timeline-booking-block .t-title {
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.timeline-booking-block .t-time {
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+/* Red Current Time Line Indicator */
+.current-time-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ef4444;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.current-time-indicator::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+}

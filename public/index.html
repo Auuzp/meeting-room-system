@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard - ระบบจองห้องประชุม</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/timeline.css" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#ff6a00" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="จองห้องประชุม" />
+  <link rel="apple-touch-icon" href="/icons/icon.svg" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏢</text></svg>">
+</head>
+<body>
+  <!-- Top Navigation Bar -->
+  <nav class="dash-navbar">
+    <div class="wrap dash-nav-inner">
+      <div class="brand-group">
+        <div class="brand-icon">🏢</div>
+        <div class="brand-title">
+          <h1>ระบบจองห้องประชุม</h1>
+          <p id="orgSubtitle">ระบบบริหารการใช้งานห้องประชุมภายในองค์กร</p>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <!-- Employee Profile Badge -->
+        <div class="user-profile-pill" id="userPill">
+          <div class="user-avatar" id="userAvatar">👤</div>
+          <div style="font-size:13px;" id="userProfileText">
+            ยังไม่ได้ยืนยันตัวตน
+          </div>
+          <button class="btn btn-sm btn-secondary" id="authBtn" onclick="openEmpLoginModal()" style="margin-left:4px;">
+            เข้าสู่ระบบ
+          </button>
+        </div>
+
+        <button class="btn btn-secondary btn-sm" id="pwaInstallBtn" style="display:none;" title="ติดตั้งแอปบนอุปกรณ์นี้">📲 ติดตั้งแอป</button>
+        <button class="btn btn-secondary btn-sm" id="qrBtn" title="สแกนผ่านมือถือ">
+          📱 มือถือ
+        </button>
+
+        <a href="/download/meeting-room-system-ready.zip" class="btn btn-secondary btn-sm" title="ดาวน์โหลดไฟล์ทั้งหมด (.ZIP)">
+          📥 โหลดไฟล์ระบบ (.ZIP)
+        </a>
+
+        <a href="/kiosk.html" class="btn btn-secondary btn-sm" target="_blank" title="จอหน้าห้องประชุม">
+          📺 จอหน้าห้อง
+        </a>
+
+        <a href="/manual.html" class="btn btn-secondary btn-sm" target="_blank" title="คู่มือการใช้งาน">
+          📖 คู่มือ
+        </a>
+
+        <a href="/admin.html" class="btn btn-secondary btn-sm" title="จัดการระบบ">
+          ⚙️ Admin
+        </a>
+
+        <button class="btn-icon" id="themeToggle" title="สลับโหมด">
+          <span id="themeIcon">🌙</span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Dashboard -->
+  <main>
+    <div class="wrap">
+      
+      <!-- Notice Alert -->
+      <div id="notice" class="notice"></div>
+
+      <!-- Dashboard Header & Actions -->
+      <div class="dash-header">
+        <div>
+          <h2>ภาพรวมการใช้ห้องประชุม</h2>
+          <p id="currentDateDisplay">กำลังโหลดข้อมูลวันที่...</p>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <a href="/api/bookings/export" class="btn btn-secondary">
+            📥 ส่งออก Excel
+          </a>
+          <button class="btn btn-primary" onclick="openBookingModal()">
+            <span>➕</span> จองห้องประชุมใหม่
+          </button>
+        </div>
+      </div>
+
+      <!-- 4 KPI Summary Cards (สถิติหลักที่มองเห็นง่ายที่สุด) -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-info">
+            <h3>ห้องประชุมทั้งหมด</h3>
+            <div class="val" id="kpiTotalRooms">-</div>
+          </div>
+          <div class="kpi-icon" style="background:#eff6ff; color:#2563eb;">🏢</div>
+        </div>
+
+        <div class="kpi-card">
+          <div class="kpi-info">
+            <h3>ห้องว่างขณะนี้</h3>
+            <div class="val" style="color:#10b981;" id="kpiFreeRooms">-</div>
+          </div>
+          <div class="kpi-icon" style="background:#ecfdf5; color:#10b981;">🟢</div>
+        </div>
+
+        <div class="kpi-card">
+          <div class="kpi-info">
+            <h3>กำลังใช้งาน</h3>
+            <div class="val" style="color:#ef4444;" id="kpiBusyRooms">-</div>
+          </div>
+          <div class="kpi-icon" style="background:#fef2f2; color:#ef4444;">🔴</div>
+        </div>
+
+        <div class="kpi-card">
+          <div class="kpi-info">
+            <h3>รายการจองวันนี้</h3>
+            <div class="val" style="color:var(--primary);" id="kpiTodayBookings">-</div>
+          </div>
+          <div class="kpi-icon" style="background:#fff7ed; color:var(--primary);">🗓️</div>
+        </div>
+      </div>
+
+      <!-- Section 1: Real-time Room Status Cards (ดูความพร้อมของแต่ละห้องทันที) -->
+      <div class="section-title">
+        <h3><span>⚡</span> สถานะห้องประชุมแบบเรียลไทม์</h3>
+        <span style="font-size:12px; color:var(--muted);">อัปเดตอัตโนมัติทุก 30 วินาที</span>
+      </div>
+
+      <div class="rooms-status-grid" id="roomsStatusGrid">
+        <!-- Populated by JS -->
+      </div>
+
+      <!-- Section 2: Schedule Board (ตารางการจองห้องประชุม ดูง่ายที่สุด) -->
+      <div class="section-title">
+        <h3><span>📋</span> ตารางการจองห้องประชุม</h3>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-secondary btn-sm" id="viewToggleTable" onclick="setScheduleView('table')" style="background:var(--primary); color:#fff; border-color:var(--primary);">
+            ตารางสรุป
+          </button>
+          <button class="btn btn-secondary btn-sm" id="viewToggleTimeline" onclick="setScheduleView('timeline')">
+            แถบไทม์ไลน์
+          </button>
+        </div>
+      </div>
+
+      <div class="schedule-panel">
+        <!-- Schedule Toolbar Filter -->
+        <div class="schedule-toolbar">
+          <div class="filter-pills">
+            <button class="filter-pill-btn active" id="btnFilterToday" onclick="setFilterQuickDate('today')">วันนี้</button>
+            <button class="filter-pill-btn" id="btnFilterTomorrow" onclick="setFilterQuickDate('tomorrow')">พรุ่งนี้</button>
+            <button class="filter-pill-btn" id="btnFilterAll" onclick="setFilterQuickDate('all')">ทั้งหมด</button>
+          </div>
+
+          <div class="filter-inputs">
+            <select id="filterRoomSelect">
+              <option value="">ทุกห้องประชุม</option>
+            </select>
+            <input type="date" id="filterDateInput" />
+          </div>
+        </div>
+
+        <!-- Table View (ดูง่าย ชัดเจนที่สุด) -->
+        <div id="scheduleTableView" style="overflow-x:auto;">
+          <table class="dash-table">
+            <thead>
+              <tr>
+                <th style="width:130px;">เวลาที่จอง</th>
+                <th style="width:140px;">วันที่</th>
+                <th>ห้องประชุม</th>
+                <th>หัวข้อการประชุม</th>
+                <th>ผู้จอง (แผนก)</th>
+                <th style="text-align:right;">การจัดการ</th>
+              </tr>
+            </thead>
+            <tbody id="scheduleTableBody">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Timeline View (ทางเลือกสำหรับดูชั่วโมงต่อชั่วโมง) -->
+        <div id="scheduleTimelineView" class="timeline-container" style="display:none; padding:16px 20px;">
+          <div class="timeline-header">
+            <div class="timeline-room-col-header">ห้องประชุม</div>
+            <div class="timeline-hours">
+              <div class="timeline-hour">08:00</div>
+              <div class="timeline-hour">09:00</div>
+              <div class="timeline-hour">10:00</div>
+              <div class="timeline-hour">11:00</div>
+              <div class="timeline-hour">12:00</div>
+              <div class="timeline-hour">13:00</div>
+              <div class="timeline-hour">14:00</div>
+              <div class="timeline-hour">15:00</div>
+              <div class="timeline-hour">16:00</div>
+              <div class="timeline-hour">17:00</div>
+              <div class="timeline-hour">18:00</div>
+              <div class="timeline-hour">19:00</div>
+            </div>
+          </div>
+          <div class="timeline-body" id="timelineBody">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Modal: ฟอร์มจองห้องประชุมใหม่ (Booking Modal) -->
+  <div class="modal-overlay" id="bookingModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>📝 จองห้องประชุม</h3>
+        <button class="modal-close" onclick="closeBookingModal()">&times;</button>
+      </div>
+      <div class="modal-content">
+        <form id="bookingModalForm" onsubmit="handleBookingSubmit(event)">
+          
+          <div class="field">
+            <label for="modalRoomSelect">1. เลือกห้องประชุมที่ต้องการ *</label>
+            <select id="modalRoomSelect" required onchange="handleModalRoomChange()">
+              <option value="">กำลังโหลดห้องประชุม...</option>
+            </select>
+          </div>
+
+          <div id="modalRoomInfo" style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-top:-8px; margin-bottom:14px; font-size:12px; color:var(--muted); display:none;">
+            <div id="modalRoomMeta">-</div>
+          </div>
+
+          <div class="field">
+            <label for="modalBookingDate">2. วันที่ต้องการใช้งาน *</label>
+            <input type="date" id="modalBookingDate" required />
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="modalStartTime">3. เวลาเริ่ม *</label>
+              <input type="time" id="modalStartTime" required step="300" />
+            </div>
+            <div class="field">
+              <label for="modalEndTime">เวลาสิ้นสุด *</label>
+              <input type="time" id="modalEndTime" required step="300" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="modalBookedBy">4. ชื่อผู้จอง (พนักงานบริษัท) *</label>
+            <input id="modalBookedBy" placeholder="ชื่อ-นามสกุล" required />
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="modalDepartment">แผนก / สังกัด</label>
+              <input id="modalDepartment" placeholder="เช่น IT, HR, ฝ่ายขาย" />
+            </div>
+            <div class="field">
+              <label for="modalPin">รหัส PIN สำหรับยกเลิก</label>
+              <input id="modalPin" type="text" maxlength="4" placeholder="1234" value="1234" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="modalTitle">หัวข้อการประชุม</label>
+            <input id="modalTitle" placeholder="เช่น ประชุมวางแผนงาน Sprint" />
+          </div>
+
+          <div class="field">
+            <label for="modalNote">หมายเหตุเพิ่มเติม</label>
+            <textarea id="modalNote" placeholder="เช่น ต้องการเครื่องฉายโปรเจกเตอร์"></textarea>
+          </div>
+
+          <div id="modalBookingError" style="color:var(--danger); font-size:13px; margin-bottom:10px; display:none;"></div>
+
+          <div class="modal-footer" style="margin:-24px; margin-top:16px;">
+            <button type="button" class="btn btn-secondary" onclick="closeBookingModal()">ยกเลิก</button>
+            <button type="submit" class="btn btn-primary" id="modalSubmitBtn">ยืนยันการจองห้อง</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: เข้าสู่ระบบพนักงาน (Employee Login) -->
+  <div class="modal-overlay" id="empModal">
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header">
+        <h3>🏢 ยืนยันตัวตนพนักงานบริษัท</h3>
+        <button class="modal-close" onclick="closeEmpLoginModal()">&times;</button>
+      </div>
+      <div class="modal-content">
+        <p style="font-size:13px; color:var(--muted); margin-bottom:14px;">
+          กรุณากรอก <b>รหัสพนักงาน</b> หรือพิมพ์ชื่อของคุณเพื่อเข้าสู่ระบบ
+        </p>
+        <div class="field">
+          <label for="empKeyword">รหัสพนักงาน หรือ ชื่อ-นามสกุล *</label>
+          <input id="empKeyword" placeholder="เช่น EMP101, EMP102 หรือ กิตติศักดิ์" autofocus />
+        </div>
+        <div id="empError" style="color:var(--danger); font-size:13px; margin-bottom:10px; display:none;"></div>
+
+        <div style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-size:12px; color:var(--muted);">
+          <b>ตัวอย่างรหัสพนักงานในระบบ:</b><br>
+          • <code>EMP101</code>: กิตติศักดิ์ พูลสวัสดิ์ (ฝ่ายบริหาร)<br>
+          • <code>EMP102</code>: สมชาย วิจิตรศิลป์ (ฝ่าย IT)<br>
+          • <code>EMP103</code>: วิภาดา มณีรัตน์ (ฝ่าย HR)
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeEmpLoginModal()">ยกเลิก</button>
+        <button class="btn btn-primary" onclick="submitEmpLogin()">ยืนยันตัวตน</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: ยกเลิกการจองด้วย PIN -->
+  <div class="modal-overlay" id="cancelModal">
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header">
+        <h3>🔒 ยืนยันการยกเลิกการจอง</h3>
+        <button class="modal-close" onclick="closeCancelModal()">&times;</button>
+      </div>
+      <div class="modal-content">
+        <p id="cancelModalDetails" style="font-size:14px; margin-bottom:14px; line-height:1.5;"></p>
+        <div class="field">
+          <label for="cancelPin">กรุณากรอกรหัส PIN 4 หลักของผู้จอง (หรือรหัส Admin) *</label>
+          <input id="cancelPin" type="password" maxlength="6" placeholder="รหัส PIN" autofocus />
+        </div>
+        <div id="cancelError" style="color:var(--danger); font-size:13px; display:none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeCancelModal()">ปิด</button>
+        <button class="btn" style="background:var(--danger); color:#fff;" id="confirmCancelBtn">ยกเลิกการจอง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: แก้ไขข้อมูลการจองห้องประชุม -->
+  <div class="modal-overlay" id="editBookingModal">
+    <div class="modal-box" style="max-width:540px;">
+      <div class="modal-header">
+        <h3>✏️ แก้ไขข้อมูลการจองห้องประชุม</h3>
+        <button class="modal-close" onclick="closeEditBookingModal()">&times;</button>
+      </div>
+      <form id="editBookingForm" onsubmit="saveEditBooking(event)">
+        <input type="hidden" id="editBookingId" />
+        <div class="modal-content">
+          <div class="field">
+            <label for="editBookingRoomSelect">ห้องประชุม *</label>
+            <select id="editBookingRoomSelect" required></select>
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="editBookingDate">วันที่ต้องการจอง *</label>
+              <input type="date" id="editBookingDate" required />
+            </div>
+            <div class="field">
+              <label>ช่วงเวลาประชุม *</label>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <input type="time" id="editBookingStartTime" step="900" required />
+                <span>ถึง</span>
+                <input type="time" id="editBookingEndTime" step="900" required />
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="editBookingTitle">หัวข้อการประชุม / เรื่องที่ประชุม *</label>
+            <input id="editBookingTitle" placeholder="เช่น ประชุมวางแผนงานประจำสัปดาห์" required />
+          </div>
+
+          <div class="two-col">
+            <div class="field">
+              <label for="editBookingBookedBy">ชื่อผู้จอง *</label>
+              <input id="editBookingBookedBy" required />
+            </div>
+            <div class="field">
+              <label for="editBookingDepartment">ฝ่าย / แผนก</label>
+              <input id="editBookingDepartment" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="editBookingNote">หมายเหตุเพิ่มเติม</label>
+            <input id="editBookingNote" placeholder="เช่น ขออุปกรณ์ไมค์เพิ่ม 2 ตัว" />
+          </div>
+
+          <div class="field" style="background:#f8fafc; border:1px dashed #cbd5e1; border-radius:8px; padding:12px;">
+            <label for="editBookingPin" style="font-weight:700; color:#1e293b;">🔒 รหัส PIN 4 หลักของผู้จอง (หรือรหัส Admin) *</label>
+            <input id="editBookingPin" type="password" maxlength="6" placeholder="รหัส PIN ตอนจอง หรือ รหัส Admin (8888)" required />
+            <small style="color:var(--muted); font-size:11px;">ใช้เพื่อยืนยันว่าเป็นผู้มีสิทธิ์แก้ไขรายการนี้</small>
+          </div>
+
+          <div id="editBookingError" style="color:var(--danger); font-size:13px; margin-top:8px; display:none;"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeEditBookingModal()">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" id="saveEditBookingBtn">บันทึกการแก้ไข</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: QR Code สำหรับเปิดบนมือถือ / เชื่อมต่อจากภายนอก -->
+  <div class="modal-overlay" id="qrModal">
+    <div class="modal-box" style="max-width:440px; text-align:center;">
+      <div class="modal-header">
+        <h3>📱 สแกนเข้าใช้งานผ่านมือถือ</h3>
+        <button class="modal-close" onclick="closeQrModal()">&times;</button>
+      </div>
+      <div class="modal-content" style="padding:20px;">
+        
+        <!-- Toggle Tabs: Wi-Fi vs Online Access -->
+        <div style="display:flex; background:var(--bg); padding:4px; border-radius:10px; border:1px solid var(--border); margin-bottom:16px;">
+          <button id="tabQrWifi" class="filter-pill-btn active" style="flex:1;" onclick="switchQrTab('wifi')">
+            📶 ในออฟฟิศ (Wi-Fi)
+          </button>
+          <button id="tabQrPublic" class="filter-pill-btn" style="flex:1;" onclick="switchQrTab('public')">
+            🌐 นอกออฟฟิศ (4G/5G/WFH)
+          </button>
+        </div>
+
+        <!-- View 1: Local Wi-Fi -->
+        <div id="qrWifiView">
+          <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+            สำหรับอุปกรณ์ที่ต่อ Wi-Fi วงเดียวกับออฟฟิศ:
+          </p>
+          <img id="qrImage" style="width:190px; height:190px; border-radius:12px; border:1px solid var(--border); margin:auto; display:block;" src="" alt="Local Wi-Fi QR" />
+          <div style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-family:monospace; font-size:12px; margin-top:10px; word-break:break-all;" id="qrUrlBox">
+            กำลังโหลด Local URL...
+          </div>
+        </div>
+
+        <!-- View 2: Public Internet (Cloudflare Tunnel) -->
+        <div id="qrPublicView" style="display:none;">
+          <div id="qrPublicActive" style="display:none;">
+            <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+              สำหรับอุปกรณ์ภายนอก, เน็ตมือถือ 4G/5G, หรือ Work From Home:
+            </p>
+            <img id="qrPublicImage" style="width:190px; height:190px; border-radius:12px; border:1px solid var(--border); margin:auto; display:block;" src="" alt="Public Internet QR" />
+            <div style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-family:monospace; font-size:12px; margin-top:10px; word-break:break-all; color:#2563eb; font-weight:700;" id="qrPublicUrlBox">
+              กำลังโหลด Public URL...
+            </div>
+            <button class="btn btn-secondary btn-sm" style="margin-top:10px; width:100%;" onclick="copyPublicUrl()">
+              📋 คัดลอกลิงก์ส่งให้พนักงาน
+            </button>
+          </div>
+
+          <div id="qrPublicInactive" style="padding:20px 10px; text-align:center;">
+            <div style="font-size:36px; margin-bottom:8px;">🌐</div>
+            <h4 style="font-size:15px; margin-bottom:6px;">ยังไม่ได้เปิดโหมดเชื่อมต่อภายนอก</h4>
+            <p style="font-size:12px; color:var(--muted); line-height:1.5; margin-bottom:14px;">
+              หากต้องการให้พนักงานจากภายนอก/เน็ต 4G/5G เข้ามาใช้งานได้ ให้เปิดโปรแกรมด้วยไฟล์ <b>START-ONLINE.bat</b>
+            </p>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer" style="justify-content:center;">
+        <button class="btn btn-secondary" onclick="closeQrModal()">ปิด</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+  <script src="/js/timeline.js"></script>
+  <script>
+    // Register Service Worker for PWA
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('PWA ServiceWorker registered:', reg.scope))
+          .catch(err => console.log('PWA ServiceWorker registration failed:', err));
+      });
+    }
+
+    // PWA Install Prompt handling
+    let deferredPrompt = null;
+    const installBtn = document.getElementById('pwaInstallBtn');
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      if (installBtn) installBtn.style.display = 'inline-flex';
+    });
+
+    if (installBtn) {
+      installBtn.addEventListener('click', async () => {
+        if (!deferredPrompt) return;
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') {
+          installBtn.style.display = 'none';
+        }
+        deferredPrompt = null;
+      });
+    }
+  </script>
+</body>
+</html>
+
+
+
