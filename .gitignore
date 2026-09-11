@@ -3,13 +3,16 @@ node_modules/
 npm-debug.log
 
 # Binaries & Large portable tools (Keep repo clean for GitHub)
-bin/git/
-bin/cloudflared.exe
-bin/*.zip
+bin/
+*.zip
+public/downloads/*.zip
 
 # Temporary & session files
 data/public_url.txt
+*.db-shm
+*.db-wal
 
 # OS Files
 .DS_Store
 Thumbs.db
+

@@ -135,6 +135,71 @@ function getNowIso() {
 }
 
 // ----------------------------------------------------
+// LINE Notification Helper
+// ----------------------------------------------------
+function getLineSettings() {
+  const enabled = db.prepare("SELECT value FROM settings WHERE key = 'line_enabled'").get()?.value === '1';
+  const type = db.prepare("SELECT value FROM settings WHERE key = 'line_type'").get()?.value || 'messaging_api';
+  const token = db.prepare("SELECT value FROM settings WHERE key = 'line_token'").get()?.value || '';
+  const destinationId = db.prepare("SELECT value FROM settings WHERE key = 'line_dest_id'").get()?.value || '';
+  return { enabled, type, token, destinationId };
+}
+
+function formatBookingThaiDate(iso) {
+  if (!iso) return '-';
+  const parts = iso.slice(0, 10).split('-');
+  if (parts.length < 3) return iso;
+  const y = parseInt(parts[0], 10) + 543;
+  const mList = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  const m = mList[parseInt(parts[1], 10)] || parts[1];
+  const d = parseInt(parts[2], 10);
+  return `${d} ${m} ${y}`;
+}
+
+async function sendLineNotification(messageText) {
+  try {
+    const { enabled, type, token, destinationId } = getLineSettings();
+    if (!enabled || !token) {
+      return { success: false, reason: 'ไม่ได้เปิดใช้งาน LINE หรือยังไม่ได้ระบุ Token' };
+    }
+
+    if (type === 'messaging_api') {
+      if (!destinationId) {
+        return { success: false, reason: 'LINE Messaging API จำเป็นต้องระบุ Destination ID (User ID / Group ID)' };
+      }
+      const res = await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          to: destinationId,
+          messages: [{ type: 'text', text: messageText }]
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { success: res.ok, status: res.status, data };
+    } else if (type === 'line_notify') {
+      const res = await fetch('https://notify-api.line.me/api/notify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Bearer ${token}`
+        },
+        body: new URLSearchParams({ message: '\n' + messageText }).toString()
+      });
+      const data = await res.json().catch(() => ({}));
+      return { success: res.ok, status: res.status, data };
+    }
+    return { success: false, reason: 'ไม่รองรับประเภท LINE นี้' };
+  } catch (err) {
+    console.error('[LINE Error]:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+// ----------------------------------------------------
 // REST API Endpoints
 // ----------------------------------------------------
 
@@ -279,6 +344,73 @@ app.delete('/api/admin/employees/:id', (req, res) => {
     res.json({ success: true, message: 'ลบพนักงานออกจากระบบเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// ADMIN: ตั้งค่าการแจ้งเตือนผ่าน LINE
+// ----------------------------------------------------
+app.get('/api/admin/settings/line', (req, res) => {
+  try {
+    const adminPin = req.headers['x-admin-pin'] || req.query.admin_pin;
+    if (!checkAdminPin(adminPin)) {
+      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
+    }
+    const settings = getLineSettings();
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/settings/line', (req, res) => {
+  try {
+    const { admin_pin, enabled, type, token, destinationId } = req.body;
+    if (!checkAdminPin(admin_pin)) {
+      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
+    }
+
+    const setVal = (k, v) => {
+      db.prepare(`
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(k, String(v ?? ''));
+    };
+
+    setVal('line_enabled', enabled ? '1' : '0');
+    setVal('line_type', type || 'messaging_api');
+    setVal('line_token', token || '');
+    setVal('line_dest_id', destinationId || '');
+
+    res.json({ success: true, message: 'บันทึกการตั้งค่า LINE Notification เรียบร้อยแล้ว' });
+  } catch (err) {
+    res.status(500).json({ error: err.message, message: 'บันทึกไม่สำเร็จ: ' + err.message });
+  }
+});
+
+app.post('/api/admin/line/test', async (req, res) => {
+  try {
+    const { admin_pin } = req.body;
+    if (!checkAdminPin(admin_pin)) {
+      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
+    }
+
+    const testMessage = `🧪 ทดสอบระบบแจ้งเตือน LINE จากระบบจองห้องประชุม
+✅ การเชื่อมต่อระบบสำเร็จเรียบร้อย!
+🕒 เวลาทดสอบ: ${new Date().toLocaleTimeString('th-TH')}
+พร้อมรับการแจ้งเตือนเมื่อมีการจอง, แก้ไข หรือยกเลิกห้องประชุมแล้วครับ`;
+
+    const result = await sendLineNotification(testMessage);
+    if (result && result.success) {
+      res.json({ success: true, message: 'ส่งข้อความทดสอบเข้า LINE สำเร็จแล้ว กรุณาเปิดดูในแอป LINE' });
+    } else {
+      res.status(400).json({ 
+        success: false, 
+        message: 'ส่งข้อความไม่สำเร็จ: ' + (result?.reason || result?.error || JSON.stringify(result?.data) || 'ตรวจสอบ Token หรือ Destination ID') 
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message, message: 'เกิดข้อผิดพลาดในการทดสอบ: ' + err.message });
   }
 });
 
@@ -565,6 +697,24 @@ app.post('/api/bookings', (req, res) => {
       bookingPin
     );
 
+    // ส่งแจ้งเตือน LINE อัตโนมัติ (Async ไม่บล็อกการจอง)
+    try {
+      const roomObj = db.prepare("SELECT name FROM rooms WHERE id = ?").get(targetRoomId);
+      const roomName = roomObj?.name || `ห้อง #${targetRoomId}`;
+      const dateThai = formatBookingThaiDate(start_at);
+      const timeRange = `${start_at.slice(11, 16)} - ${end_at.slice(11, 16)} น.`;
+
+      const lineMsg = `🔔 มีการจองห้องประชุมใหม่!
+🏢 ห้อง: ${roomName}
+📌 หัวข้อ: ${meetingTitle}
+👤 ผู้จอง: ${booked_by.trim()}${department ? ' (' + department.trim() + ')' : ''}
+🗓️ วันที่: ${dateThai}
+⏰ เวลา: ${timeRange}
+${(note && note.trim()) ? '💬 หมายเหตุ: ' + note.trim() + '\n' : ''}✅ สถานะ: ยืนยันการจองเรียบร้อย`;
+
+      sendLineNotification(lineMsg).catch(() => {});
+    } catch (e) {}
+
     res.status(201).json({
       success: true,
       id: result.lastInsertRowid,
@@ -594,6 +744,24 @@ app.delete('/api/bookings/:id', (req, res) => {
     }
 
     db.prepare("UPDATE bookings SET status = 'cancelled' WHERE id = ?").run(id);
+
+    // ส่งแจ้งเตือนยกเลิกทาง LINE
+    try {
+      const roomObj = db.prepare("SELECT name FROM rooms WHERE id = ?").get(booking.room_id);
+      const roomName = roomObj?.name || `ห้อง #${booking.room_id}`;
+      const dateThai = formatBookingThaiDate(booking.start_at);
+      const timeRange = `${booking.start_at.slice(11, 16)} - ${booking.end_at.slice(11, 16)} น.`;
+
+      const lineMsg = `❌ มีการยกเลิกการจองห้องประชุม!
+🏢 ห้อง: ${roomName}
+📌 หัวข้อ: ${booking.title}
+👤 ผู้จองเดิม: ${booking.booked_by}
+🗓️ วันที่: ${dateThai} (เวลา ${timeRange})
+🟢 สถานะ: ว่างพร้อมให้ผู้อื่นเข้าใช้งานหรือจองต่อได้ทันที`;
+
+      sendLineNotification(lineMsg).catch(() => {});
+    } catch (e) {}
+
     res.json({ success: true, message: 'ยกเลิกการจองห้องประชุมเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message, message: 'ยกเลิกไม่สำเร็จ: ' + err.message });
@@ -645,6 +813,24 @@ app.put('/api/bookings/:id', (req, res) => {
       SET room_id = ?, title = ?, booked_by = ?, department = ?, start_at = ?, end_at = ?, note = ?
       WHERE id = ?
     `).run(targetRoomId, newTitle, newBookedBy, newDept, newStart, newEnd, newNote, id);
+
+    // ส่งแจ้งเตือนการแก้ไขทาง LINE
+    try {
+      const roomObj = db.prepare("SELECT name FROM rooms WHERE id = ?").get(targetRoomId);
+      const roomName = roomObj?.name || `ห้อง #${targetRoomId}`;
+      const dateThai = formatBookingThaiDate(newStart);
+      const timeRange = `${newStart.slice(11, 16)} - ${newEnd.slice(11, 16)} น.`;
+
+      const lineMsg = `✏️ มีการแก้ไขข้อมูลการจองห้องประชุม!
+🏢 ห้อง: ${roomName}
+📌 หัวข้อ: ${newTitle}
+👤 ผู้จอง: ${newBookedBy}${newDept ? ' (' + newDept + ')' : ''}
+🗓️ วันที่: ${dateThai}
+⏰ เวลาใหม่: ${timeRange}
+${newNote ? '💬 หมายเหตุ: ' + newNote + '\n' : ''}✅ สถานะ: ปรับปรุงข้อมูลเรียบร้อย`;
+
+      sendLineNotification(lineMsg).catch(() => {});
+    } catch (e) {}
 
     res.json({ success: true, message: 'บันทึกการแก้ไขข้อมูลการจองเรียบร้อยแล้ว' });
   } catch (err) {

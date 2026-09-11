@@ -169,6 +169,9 @@
           <button class="admin-tab-btn" id="tabReportsHeader" onclick="switchAdminTab('reports')">
             <span>📊</span> รายงานและการส่งออก (Reports)
           </button>
+          <button class="admin-tab-btn" id="tabLineHeader" onclick="switchAdminTab('line')">
+            <span>🔔</span> แจ้งเตือน LINE (LINE Notify / Bot)
+          </button>
         </div>
 
         <div id="adminNotice" class="notice"></div>
@@ -248,6 +251,73 @@
             <p style="font-size:14px; color:var(--muted); line-height:1.6;">
               ไฟล์รายงานจะประกอบด้วยข้อมูล: รหัสการจอง, รหัสห้อง, ชื่อห้องประชุม, หัวข้อการประชุม, ชื่อผู้จอง, แผนก, วันที่และเวลาเริ่มต้น-สิ้นสุด, สถานะการจอง, และหมายเหตุ รองรับการแสดงผลภาษาไทยสมบูรณ์ (UTF-8 BOM)
             </p>
+          </div>
+        </section>
+
+        <!-- TAB 4: แจ้งเตือน LINE (LINE Notifications) -->
+        <section class="card admin-tab-content" id="tabContentLine" style="display:none;">
+          <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:18px 24px; border-bottom:1px solid var(--border);">
+            <div>
+              <h3 style="font-size:17px; margin:0;">🔔 ตั้งค่าการแจ้งเตือนผ่าน LINE</h3>
+              <p style="font-size:13px; color:var(--muted); margin-top:2px;">ส่งข้อความแจ้งเตือนอัตโนมัติเมื่อมีพนักงานจองห้อง, แก้ไขเวลา, หรือยกเลิกการจอง</p>
+            </div>
+          </div>
+          <div class="card-body" style="padding:24px; max-width:680px;">
+            <form id="lineSettingsForm" onsubmit="saveLineSettings(event)">
+              
+              <div class="field" style="margin-bottom:20px; background:var(--bg); padding:14px; border-radius:8px; border:1px solid var(--border);">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:700; font-size:15px;">
+                  <input type="checkbox" id="lineEnabled" style="width:20px; height:20px;" />
+                  <span>เปิดใช้งานระบบส่งแจ้งเตือนทาง LINE (LINE Notifications)</span>
+                </label>
+              </div>
+
+              <div class="field">
+                <label for="lineType">ประเภทการเชื่อมต่อ LINE *</label>
+                <select id="lineType" onchange="toggleLineFields()">
+                  <option value="messaging_api">LINE Messaging API (LINE Official Account / Bot) - แนะนำ</option>
+                  <option value="line_notify">LINE Notify (Token)</option>
+                </select>
+                <small style="color:var(--muted); font-size:12px; margin-top:4px; display:block;">
+                  💡 แนะนำ: <b>LINE Messaging API</b> รองรับการใช้งานระยะยาวและส่งเข้ากลุ่มหรือรายบุคคลได้ทันที
+                </small>
+              </div>
+
+              <div class="field">
+                <label for="lineToken" id="lblLineToken">Channel Access Token *</label>
+                <textarea id="lineToken" rows="3" placeholder="วาง Token ที่ได้จาก LINE Developers Console หรือ LINE Notify ที่นี่..." style="font-family:monospace; font-size:13px;"></textarea>
+              </div>
+
+              <div class="field" id="fieldLineDest">
+                <label for="lineDestId">Destination ID (User ID หรือ Group ID ที่ต้องการให้ส่งไป) *</label>
+                <input id="lineDestId" placeholder="เช่น U12345678... (User ID) หรือ C12345678... (Group ID)" style="font-family:monospace;" />
+                <small style="color:var(--muted); font-size:12px; margin-top:4px; display:block;">
+                  นำบอทเข้ากลุ่ม LINE ของบริษัท แล้วคัดลอก Group ID หรือ User ID มาวางที่นี่
+                </small>
+              </div>
+
+              <div id="lineSettingsError" style="color:var(--danger); font-size:13px; margin-bottom:12px; display:none;"></div>
+              <div id="lineSettingsSuccess" style="color:var(--success); font-size:13px; margin-bottom:12px; display:none;"></div>
+
+              <div style="display:flex; gap:10px; margin-top:20px;">
+                <button type="submit" class="btn btn-primary" id="btnSaveLine">
+                  💾 บันทึกการตั้งค่า LINE
+                </button>
+                <button type="button" class="btn btn-secondary" onclick="testLineNotification()" id="btnTestLine">
+                  🧪 ทดสอบส่งข้อความเข้า LINE
+                </button>
+              </div>
+            </form>
+
+            <div style="margin-top:30px; padding:16px; background:var(--bg); border:1px dashed var(--border); border-radius:8px; font-size:13px; line-height:1.6;">
+              <h4 style="margin:0 0 8px 0; font-size:14px; color:var(--dark);">📖 วิธีการรับ Token ของ LINE Messaging API (ฟรี):</h4>
+              <ol style="margin:0; padding-left:20px; color:var(--muted);">
+                <li>เข้าสู่เว็บไซต์ <a href="https://developers.line.biz/console/" target="_blank" style="color:var(--primary);">LINE Developers Console</a> แล้วล็อกอินด้วยบัญชี LINE</li>
+                <li>สร้าง Provider และ Channel ประเภท <b>Messaging API</b> (หรือใช้ LINE Official Account ที่มีอยู่)</li>
+                <li>ไปที่แท็บ <b>Messaging API</b> แล้วกด Issue ที่หัวข้อ <b>Channel access token (long-lived)</b> เพื่อคัดลอก Token</li>
+                <li>เชิญบอทเข้ากลุ่มงานของบริษัท แล้วนำ Group ID มาวางในช่อง Destination ID</li>
+              </ol>
+            </div>
           </div>
         </section>
 
@@ -463,6 +533,120 @@
       } else if (tab === 'reports') {
         document.getElementById('tabReportsHeader').classList.add('active');
         document.getElementById('tabContentReports').style.display = 'block';
+      } else if (tab === 'line') {
+        document.getElementById('tabLineHeader').classList.add('active');
+        document.getElementById('tabContentLine').style.display = 'block';
+        loadLineSettings();
+      }
+    }
+
+    // ----------------------------------------------------
+    // LINE NOTIFICATIONS SETTINGS
+    // ----------------------------------------------------
+    function toggleLineFields() {
+      const type = document.getElementById('lineType').value;
+      const destField = document.getElementById('fieldLineDest');
+      const tokenLbl = document.getElementById('lblLineToken');
+      if (type === 'line_notify') {
+        destField.style.display = 'none';
+        tokenLbl.textContent = 'LINE Notify Token *';
+      } else {
+        destField.style.display = 'block';
+        tokenLbl.textContent = 'Channel Access Token (Long-lived) *';
+      }
+    }
+
+    async function loadLineSettings() {
+      const pin = getValidAdminPin();
+      if (!pin) return;
+      try {
+        const res = await fetch(`/api/admin/settings/line?admin_pin=${pin}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('lineEnabled').checked = !!data.enabled;
+        document.getElementById('lineType').value = data.type || 'messaging_api';
+        document.getElementById('lineToken').value = data.token || '';
+        document.getElementById('lineDestId').value = data.destinationId || '';
+        toggleLineFields();
+      } catch (e) {}
+    }
+
+    async function saveLineSettings(e) {
+      e.preventDefault();
+      const pin = getValidAdminPin();
+      if (!pin) return;
+
+      const enabled = document.getElementById('lineEnabled').checked;
+      const type = document.getElementById('lineType').value;
+      const token = document.getElementById('lineToken').value.trim();
+      const destinationId = document.getElementById('lineDestId').value.trim();
+
+      const btn = document.getElementById('btnSaveLine');
+      btn.disabled = true;
+      btn.textContent = 'กำลังบันทึก...';
+
+      const errEl = document.getElementById('lineSettingsError');
+      const succEl = document.getElementById('lineSettingsSuccess');
+      errEl.style.display = 'none';
+      succEl.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/admin/settings/line', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ admin_pin: pin, enabled, type, token, destinationId })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          errEl.textContent = data.message || 'บันทึกไม่สำเร็จ';
+          errEl.style.display = 'block';
+        } else {
+          succEl.textContent = '✅ ' + data.message;
+          succEl.style.display = 'block';
+          showAdminNotice(data.message);
+        }
+      } catch (err) {
+        errEl.textContent = 'เกิดข้อผิดพลาดในการเชื่อมต่อ: ' + err.message;
+        errEl.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '💾 บันทึกการตั้งค่า LINE';
+      }
+    }
+
+    async function testLineNotification() {
+      const pin = getValidAdminPin();
+      if (!pin) return;
+
+      const btn = document.getElementById('btnTestLine');
+      btn.disabled = true;
+      btn.textContent = 'กำลังส่งทดสอบ...';
+
+      const errEl = document.getElementById('lineSettingsError');
+      const succEl = document.getElementById('lineSettingsSuccess');
+      errEl.style.display = 'none';
+      succEl.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/admin/line/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ admin_pin: pin })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          errEl.textContent = '❌ ' + (data.message || 'ส่งทดสอบไม่สำเร็จ');
+          errEl.style.display = 'block';
+        } else {
+          succEl.textContent = '🎉 ' + data.message;
+          succEl.style.display = 'block';
+        }
+      } catch (err) {
+        errEl.textContent = 'เกิดข้อผิดพลาด: ' + err.message;
+        errEl.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🧪 ทดสอบส่งข้อความเข้า LINE';
       }
     }
 
