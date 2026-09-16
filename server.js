@@ -371,6 +371,15 @@ function getNowIso() {
 // ----------------------------------------------------
 // LINE Notification Helper
 // ----------------------------------------------------
+let lineNotificationTransport = (...args) => fetch(...args);
+
+function setLineNotificationTransport(transport) {
+  if (typeof transport !== 'function') {
+    throw new TypeError('LINE notification transport must be a function');
+  }
+  lineNotificationTransport = transport;
+}
+
 function getLineSettings() {
   const enabled = db.prepare("SELECT value FROM settings WHERE key = 'line_enabled'").get()?.value === '1';
   const type = db.prepare("SELECT value FROM settings WHERE key = 'line_type'").get()?.value || 'messaging_api';
@@ -401,7 +410,7 @@ async function sendLineNotification(messageText) {
       if (!destinationId) {
         return { success: false, reason: 'LINE Messaging API จำเป็นต้องระบุ Destination ID (User ID / Group ID)' };
       }
-      const res = await fetch('https://api.line.me/v2/bot/message/push', {
+      const res = await lineNotificationTransport('https://api.line.me/v2/bot/message/push', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -415,7 +424,7 @@ async function sendLineNotification(messageText) {
       const data = await res.json().catch(() => ({}));
       return { success: res.ok, status: res.status, data };
     } else if (type === 'line_notify') {
-      const res = await fetch('https://notify-api.line.me/api/notify', {
+      const res = await lineNotificationTransport('https://notify-api.line.me/api/notify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -1318,6 +1327,6 @@ module.exports = {
   resetAdminAuthRateLimit,
   checkAdminRateLimit,
   recordAdminAuthFailure,
-  getLocalIp
+  getLocalIp,
+  setLineNotificationTransport
 };
-
