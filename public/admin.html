@@ -144,8 +144,7 @@
         </div>
         <div class="card-body">
           <p style="color:var(--muted); font-size:14px; margin-bottom:18px;">
-            กรุณากรอกรหัส Master Admin PIN เพื่อเข้าสู่หน้าการจัดการระบบ<br>
-            <small>(รหัสตั้งต้นระบบ: <b>8888</b>)</small>
+            กรุณากรอกรหัส Master Admin PIN เพื่อเข้าสู่หน้าการจัดการระบบ
           </p>
           <div class="field">
             <input type="password" id="adminPinInput" placeholder="รหัส PIN 4 หลัก" style="text-align:center; font-size:22px; letter-spacing:6px;" autofocus />
@@ -560,7 +559,9 @@
       const pin = getValidAdminPin();
       if (!pin) return;
       try {
-        const res = await fetch(`/api/admin/settings/line?admin_pin=${pin}`);
+        const res = await fetch('/api/admin/settings/line', {
+          headers: { 'x-admin-pin': pin }
+        });
         if (!res.ok) return;
         const data = await res.json();
         document.getElementById('lineEnabled').checked = !!data.enabled;
@@ -593,8 +594,8 @@
       try {
         const res = await fetch('/api/admin/settings/line', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ admin_pin: pin, enabled, type, token, destinationId })
+          headers: { 'Content-Type': 'application/json', 'x-admin-pin': pin },
+          body: JSON.stringify({ enabled, type, token, destinationId })
         });
         const data = await res.json();
         if (!res.ok) {
@@ -630,8 +631,8 @@
       try {
         const res = await fetch('/api/admin/line/test', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ admin_pin: pin })
+          headers: { 'Content-Type': 'application/json', 'x-admin-pin': pin },
+          body: JSON.stringify({})
         });
         const data = await res.json();
         if (!res.ok) {
@@ -733,14 +734,14 @@
       const color = document.getElementById('roomColor').value;
       const amenities = Array.from(document.querySelectorAll('input[name="amenity"]:checked')).map(cb => cb.value);
 
-      const payload = { admin_pin: currentPin, code, name, capacity, location, color, amenities };
+      const payload = { code, name, capacity, location, color, amenities };
       const url = id ? `/api/rooms/${id}` : '/api/rooms';
       const method = id ? 'PUT' : 'POST';
 
       try {
         const res = await fetch(url, {
           method,
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-admin-pin': currentPin },
           body: JSON.stringify(payload)
         });
 
@@ -768,8 +769,7 @@
 
       const res = await fetch(`/api/rooms/${id}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ admin_pin: currentPin })
+        headers: { 'Content-Type': 'application/json', 'x-admin-pin': currentPin }
       });
 
       if (res.ok) {
@@ -782,8 +782,12 @@
 
     // 2. MANAGE ALLOWED EMPLOYEES
     async function loadAdminEmployees() {
+      const currentPin = getValidAdminPin();
+      if (!currentPin) return;
       try {
-        const res = await fetch(`/api/admin/employees?admin_pin=${adminPin}`);
+        const res = await fetch('/api/admin/employees', {
+          headers: { 'x-admin-pin': currentPin }
+        });
         employees = await res.json();
         renderEmployeeTable();
       } catch (err) {
@@ -875,14 +879,14 @@
       const position = document.getElementById('empPosInput').value.trim();
       const is_active = id ? Number(document.getElementById('empActiveSelect').value) : 1;
 
-      const payload = { admin_pin: currentPin, emp_code, name, department, position, is_active };
+      const payload = { emp_code, name, department, position, is_active };
       const url = id ? `/api/admin/employees/${id}` : '/api/admin/employees';
       const method = id ? 'PUT' : 'POST';
 
       try {
         const res = await fetch(url, {
           method,
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-admin-pin': currentPin },
           body: JSON.stringify(payload)
         });
 
@@ -908,8 +912,8 @@
       const currentPin = getValidAdminPin();
       const res = await fetch(`/api/admin/employees/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ admin_pin: currentPin, is_active: newActive })
+        headers: { 'Content-Type': 'application/json', 'x-admin-pin': currentPin },
+        body: JSON.stringify({ is_active: newActive })
       });
 
       if (res.ok) {
@@ -926,8 +930,7 @@
 
       const res = await fetch(`/api/admin/employees/${id}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ admin_pin: currentPin })
+        headers: { 'Content-Type': 'application/json', 'x-admin-pin': currentPin }
       });
 
       if (res.ok) {
