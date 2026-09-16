@@ -12,6 +12,15 @@ const DB_PATH = path.join(__dirname, 'data', 'meeting_rooms.db');
 
 app.use(cors());
 app.use(express.json());
+
+// Prevent stale caching on all API requests
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize SQLite Database

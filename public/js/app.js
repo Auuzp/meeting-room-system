@@ -109,8 +109,26 @@ async function initApp() {
   currentDateDisplay.textContent = fmtFullDateThai(new Date());
 
   const todayStr = getLocalDateString();
-  filterDateInput.value = todayStr;
-  modalBookingDate.value = todayStr;
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramDate = urlParams.get('date');
+  const paramFilter = urlParams.get('filter');
+
+  if (paramFilter === 'all') {
+    filterDateInput.value = '';
+    state.filterDateMode = 'all';
+    document.getElementById('btnFilterToday')?.classList.remove('active');
+    document.getElementById('btnFilterTomorrow')?.classList.remove('active');
+    document.getElementById('btnFilterAll')?.classList.add('active');
+  } else if (paramDate) {
+    filterDateInput.value = paramDate;
+    if (paramDate !== todayStr) {
+      document.getElementById('btnFilterToday')?.classList.remove('active');
+    }
+  } else {
+    filterDateInput.value = todayStr;
+  }
+
+  modalBookingDate.value = paramDate || todayStr;
 
   // Set default times (e.g. 13:00 - 14:00)
   const now = new Date();
@@ -123,11 +141,11 @@ async function initApp() {
   await loadRooms();
   await loadBookings();
 
-  // Auto refresh every 20 seconds
+  // Auto refresh every 10 seconds for real-time synchronization across devices
   setInterval(async () => {
     await loadRooms(false);
     await loadBookings(false);
-  }, 20000);
+  }, 10000);
 }
 
 // ----------------------------------------------------
