@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="th">
 <head>
   <meta charset="UTF-8" />
@@ -286,6 +286,7 @@
       <select id="setupRoomSelect">
         <option value="">กำลังโหลดรายการห้อง...</option>
       </select>
+      <input type="password" id="setupKioskSecret" placeholder="Kiosk Secret (X-Kiosk-Secret)" style="width:100%; padding:14px; border-radius:12px; background:#0f172a; color:#fff; border:1px solid #475569; font-size:16px; margin-bottom:18px; outline:none; box-sizing:border-box;" />
       <button onclick="saveKioskRoom()">บันทึกและเริ่มแสดงผล</button>
     </div>
   </div>
@@ -445,9 +446,15 @@
       if (!confirm(`ยืนยันการจองด่วน ${minutes} นาที สำหรับห้องนี้หรือไม่?`)) return;
 
       try {
+        const kioskSecret = localStorage.getItem('kiosk_secret') || '';
+        const headers = { 'Content-Type': 'application/json' };
+        if (kioskSecret) {
+          headers['x-kiosk-secret'] = kioskSecret;
+        }
+
         const res = await fetch('/api/kiosk/quick-book', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             room_id: currentRoomId,
             minutes: minutes,
@@ -477,6 +484,10 @@
           ${r.name} (${r.location})
         </option>
       `).join('');
+      const secretInput = document.getElementById('setupKioskSecret');
+      if (secretInput) {
+        secretInput.value = localStorage.getItem('kiosk_secret') || '';
+      }
       document.getElementById('setupOverlay').style.display = 'flex';
     }
 
@@ -485,6 +496,10 @@
       if (!selected) return;
       currentRoomId = selected;
       localStorage.setItem('kiosk_room_id', selected);
+      const secretInput = document.getElementById('setupKioskSecret');
+      if (secretInput) {
+        localStorage.setItem('kiosk_secret', secretInput.value.trim());
+      }
       document.getElementById('setupOverlay').style.display = 'none';
       loadKioskData();
     }

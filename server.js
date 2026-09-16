@@ -3,12 +3,19 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const QRCode = require('qrcode');
 const { DatabaseSync } = require('node:sqlite');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DB_PATH = path.join(__dirname, 'data', 'meeting_rooms.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'meeting_rooms.db');
+
+// Ensure database directory exists
+const dbDir = path.dirname(DB_PATH);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
 
 app.use(cors());
 app.use(express.json());
@@ -68,7 +75,7 @@ db.exec(`
     start_at TEXT NOT NULL,
     end_at TEXT NOT NULL,
     note TEXT,
-    pin TEXT DEFAULT '0000',
+    pin TEXT,
     status TEXT DEFAULT 'confirmed',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(room_id) REFERENCES rooms(id)
@@ -85,28 +92,205 @@ try {
   // Column already exists, ignore
 }
 
-// Initialize Default Settings
-const adminPinRow = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get();
-if (!adminPinRow) {
-  db.prepare("INSERT INTO settings (key, value) VALUES ('admin_pin', '8888')").run();
+// ----------------------------------------------------
+// Security & PIN Hashing Helpers
+// ----------------------------------------------------
+function hashPin(pin, salt = null) {
+  if (!salt) {
+    salt = crypto.randomBytes(16).toString('hex');
+  }
+  const hash = crypto.scryptSync(String(pin), salt, 64).toString('hex');
+  return `$scrypt$${salt}$${hash}`;
+}
+
+function verifyPinHash(pin, storedValue) {
+  if (!pin || !storedValue) return false;
+  if (!storedValue.startsWith('$scrypt$')) {
+    // Legacy plaintext support during migration (constant-time compare)
+    const pinBuf = Buffer.from(String(pin));
+    const storedBuf = Buffer.from(String(storedValue));
+    if (pinBuf.length !== storedBuf.length) return false;
+    return crypto.timingSafeEqual(pinBuf, storedBuf);
+  }
+  const parts = storedValue.split('$');
+  if (parts.length !== 4) return false;
+  const salt = parts[2];
+  const originalHash = parts[3];
+  const targetHash = crypto.scryptSync(String(pin), salt, 64).toString('hex');
+  const origBuf = Buffer.from(originalHash, 'hex');
+  const targetBuf = Buffer.from(targetHash, 'hex');
+  if (origBuf.length !== targetBuf.length) return false;
+  return crypto.timingSafeEqual(origBuf, targetBuf);
+}
+
+// Generate zero-modulo-bias 4-digit PIN using crypto.randomInt
+function generateSecurePin() {
+  return crypto.randomInt(1000, 10000).toString();
+}
+
+// Rate Limiter for Admin PIN (Failed attempt tracking per IP)
+const adminRateLimitMap = new Map(); // ip -> { failCount, lockUntil, resetTime }
+
+function checkAdminRateLimit(ip) {
+  const now = Date.now();
+  const record = adminRateLimitMap.get(ip);
+  if (!record) return { allowed: true };
+
+  if (record.lockUntil && now < record.lockUntil) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((record.lockUntil - now) / 1000));
+    return { allowed: false, retryAfter: retryAfterSeconds };
+  }
+
+  if (now > record.resetTime) {
+    adminRateLimitMap.delete(ip);
+    return { allowed: true };
+  }
+
+  return { allowed: true };
+}
+
+function recordAdminAuthFailure(ip, maxFailures = 5, lockDurationMs = 60000) {
+  const now = Date.now();
+  let record = adminRateLimitMap.get(ip);
+  if (!record || now > record.resetTime) {
+    record = { failCount: 1, lockUntil: 0, resetTime: now + lockDurationMs };
+  } else {
+    record.failCount++;
+  }
+  if (record.failCount >= maxFailures) {
+    record.lockUntil = now + lockDurationMs;
+  }
+  adminRateLimitMap.set(ip, record);
+  return record;
+}
+
+function resetAdminAuthRateLimit(ip) {
+  adminRateLimitMap.delete(ip);
+}
+
+// Initialize Settings & Migration (Strictly NO fallback default PIN)
+if (process.env.ADMIN_PIN && process.env.ADMIN_PIN.trim()) {
+  const hashed = hashPin(process.env.ADMIN_PIN.trim());
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('admin_pin', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(hashed);
+} else {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get();
+  if (row && !row.value.startsWith('$scrypt$')) {
+    // Migrate existing plaintext to scrypt hash safely
+    db.prepare("UPDATE settings SET value = ? WHERE key = 'admin_pin'").run(hashPin(row.value));
+  }
+}
+
+// Ensure org_name exists
+const orgNameRow = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get();
+if (!orgNameRow) {
   db.prepare("INSERT INTO settings (key, value) VALUES ('org_name', 'ระบบจองห้องประชุมภายในองค์กร')").run();
+}
+
+// Helper: Extract Admin PIN safely (Reject if in query string)
+function extractAdminPin(req) {
+  let pin = req.headers['x-admin-pin'];
+  if (!pin && req.headers.authorization) {
+    const auth = req.headers.authorization.trim();
+    if (auth.startsWith('Bearer ')) {
+      pin = auth.slice(7).trim();
+    } else {
+      pin = auth;
+    }
+  }
+  if (!pin && req.body && typeof req.body === 'object') {
+    pin = req.body.admin_pin || req.body.pin;
+  }
+  return pin ? String(pin).trim() : null;
 }
 
 // Helper: Check Admin PIN
 function checkAdminPin(pin) {
-  const systemAdminPin = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get()?.value || '8888';
-  return pin === systemAdminPin;
+  if (!pin) return false;
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get();
+  if (!row || !row.value) return false;
+  return verifyPinHash(pin, row.value);
+}
+
+// Middleware: Require Admin Authentication
+function requireAdminAuth(req, res, next) {
+  if (req.query && (req.query.admin_pin || req.query.pin)) {
+    return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง Admin PIN ผ่าน query string' });
+  }
+
+  const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+  const rateLimitStatus = checkAdminRateLimit(clientIp);
+  if (!rateLimitStatus.allowed) {
+    res.setHeader('Retry-After', String(rateLimitStatus.retryAfter));
+    return res.status(429).json({
+      message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${rateLimitStatus.retryAfter} วินาที`,
+      retryAfter: rateLimitStatus.retryAfter
+    });
+  }
+
+  const pin = extractAdminPin(req);
+  if (checkAdminPin(pin)) {
+    resetAdminAuthRateLimit(clientIp);
+    return next();
+  }
+
+  const failureRecord = recordAdminAuthFailure(clientIp);
+  if (failureRecord.lockUntil && failureRecord.lockUntil > Date.now()) {
+    const retryAfter = Math.max(1, Math.ceil((failureRecord.lockUntil - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${retryAfter} วินาที`,
+      retryAfter: retryAfter
+    });
+  }
+
+  return res.status(401).json({ message: 'ต้องการสิทธิ์ผู้ดูแลระบบ (Admin PIN ไม่ถูกต้อง)' });
+}
+
+// Middleware: Require Kiosk Authentication (Strict: NO default secret, Header ONLY)
+function requireKioskAuth(req, res, next) {
+  if (req.query && (req.query.kiosk_secret || req.query.secret)) {
+    return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง Kiosk Secret ผ่าน query string' });
+  }
+
+  const kioskSecretEnv = process.env.KIOSK_SECRET;
+  if (!kioskSecretEnv || !kioskSecretEnv.trim()) {
+    return res.status(401).json({ message: 'Kiosk service is not configured (missing KIOSK_SECRET)' });
+  }
+
+  const secret = req.headers['x-kiosk-secret'];
+  if (!secret) {
+    return res.status(401).json({ message: 'ต้องการสิทธิ์ Kiosk (กรุณาระบุ X-Kiosk-Secret header)' });
+  }
+
+  const secBuf = Buffer.from(String(secret));
+  const envBuf = Buffer.from(String(kioskSecretEnv.trim()));
+  if (secBuf.length !== envBuf.length || !crypto.timingSafeEqual(secBuf, envBuf)) {
+    return res.status(401).json({ message: 'Kiosk secret ไม่ถูกต้อง' });
+  }
+  next();
 }
 
 // Utility: Get Local IPv4 Address
 function getLocalIp() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const net of interfaces[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        return net.address;
+  try {
+    const interfaces = os.networkInterfaces();
+    if (interfaces && typeof interfaces === 'object') {
+      for (const name of Object.keys(interfaces)) {
+        const ifaceList = interfaces[name];
+        if (Array.isArray(ifaceList)) {
+          for (const net of ifaceList) {
+            if (net && net.family === 'IPv4' && !net.internal) {
+              return net.address;
+            }
+          }
+        }
       }
     }
+  } catch (err) {
+    // fallback to localhost on error
   }
   return 'localhost';
 }
@@ -132,6 +316,47 @@ function findConflict(roomId, startAt, endAt, excludeBookingId = null) {
   return db.prepare(query).get(...params);
 }
 
+// Strict ISO Date parsing & validation (prevent auto-normalization of invalid calendar dates like Feb 31)
+function parseAndValidateIsoDate(isoStr) {
+  if (typeof isoStr !== 'string') return null;
+  const match = isoStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  const hour = parseInt(match[4], 10);
+  const minute = parseInt(match[5], 10);
+  const second = match[6] ? parseInt(match[6], 10) : 0;
+
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  if (second < 0 || second > 59) return null;
+
+  const isLeapYear = (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0));
+  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (day > daysInMonth[month - 1]) return null;
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const normalized = `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}`;
+  const timestamp = Date.UTC(year, month - 1, day, hour, minute, second);
+  return { normalized, timestamp, year, month, day, hour, minute, second };
+}
+
+function validateBookingTimes(start_at, end_at) {
+  const startParsed = parseAndValidateIsoDate(start_at);
+  const endParsed = parseAndValidateIsoDate(end_at);
+  if (!startParsed || !endParsed) {
+    return { valid: false, message: 'รูปแบบวันที่และเวลาไม่ถูกต้อง หรือเป็นวันที่ไม่มีอยู่จริงในปฏิทิน' };
+  }
+  if (startParsed.timestamp >= endParsed.timestamp) {
+    return { valid: false, message: 'เวลาเริ่มต้องมาก่อนเวลาสิ้นสุดเสมอ' };
+  }
+  return { valid: true, startAt: startParsed.normalized, endAt: endParsed.normalized };
+}
+
 function getNowIso() {
   const now = new Date();
   const y = now.getFullYear();
@@ -146,6 +371,15 @@ function getNowIso() {
 // ----------------------------------------------------
 // LINE Notification Helper
 // ----------------------------------------------------
+let lineNotificationTransport = (...args) => fetch(...args);
+
+function setLineNotificationTransport(transport) {
+  if (typeof transport !== 'function') {
+    throw new TypeError('LINE notification transport must be a function');
+  }
+  lineNotificationTransport = transport;
+}
+
 function getLineSettings() {
   const enabled = db.prepare("SELECT value FROM settings WHERE key = 'line_enabled'").get()?.value === '1';
   const type = db.prepare("SELECT value FROM settings WHERE key = 'line_type'").get()?.value || 'messaging_api';
@@ -176,7 +410,7 @@ async function sendLineNotification(messageText) {
       if (!destinationId) {
         return { success: false, reason: 'LINE Messaging API จำเป็นต้องระบุ Destination ID (User ID / Group ID)' };
       }
-      const res = await fetch('https://api.line.me/v2/bot/message/push', {
+      const res = await lineNotificationTransport('https://api.line.me/v2/bot/message/push', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -190,7 +424,7 @@ async function sendLineNotification(messageText) {
       const data = await res.json().catch(() => ({}));
       return { success: res.ok, status: res.status, data };
     } else if (type === 'line_notify') {
-      const res = await fetch('https://notify-api.line.me/api/notify', {
+      const res = await lineNotificationTransport('https://notify-api.line.me/api/notify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -215,13 +449,23 @@ async function sendLineNotification(messageText) {
 // 1. System Info & QR Code
 app.get('/api/system/info', async (req, res) => {
   try {
-    const localIp = getLocalIp();
+    let localIp = 'localhost';
+    try {
+      localIp = getLocalIp();
+    } catch (_) {
+      localIp = 'localhost';
+    }
     const networkUrl = `http://${localIp}:${PORT}`;
-    const qrDataUrl = await QRCode.toDataURL(networkUrl, {
-      margin: 2,
-      width: 260,
-      color: { dark: '#111827', light: '#ffffff' }
-    });
+    let qrDataUrl = '';
+    try {
+      qrDataUrl = await QRCode.toDataURL(networkUrl, {
+        margin: 2,
+        width: 260,
+        color: { dark: '#111827', light: '#ffffff' }
+      });
+    } catch (_) {
+      qrDataUrl = '';
+    }
 
     const orgName = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get()?.value || 'ระบบจองห้องประชุมภายในองค์กร';
 
@@ -233,16 +477,50 @@ app.get('/api/system/info', async (req, res) => {
       orgName
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(200).json({
+      localIp: 'localhost',
+      port: PORT,
+      networkUrl: `http://localhost:${PORT}`,
+      qrDataUrl: '',
+      orgName: 'ระบบจองห้องประชุมภายในองค์กร'
+    });
   }
 });
 
 // 2. Admin PIN Verification
 app.post('/api/admin/verify', (req, res) => {
-  const { pin } = req.body;
+  if (req.query && (req.query.admin_pin || req.query.pin)) {
+    return res.status(400).json({ success: false, message: 'ไม่อนุญาตให้ส่ง Admin PIN ผ่าน query string' });
+  }
+
+  const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+  const rateLimitStatus = checkAdminRateLimit(clientIp);
+  if (!rateLimitStatus.allowed) {
+    res.setHeader('Retry-After', String(rateLimitStatus.retryAfter));
+    return res.status(429).json({
+      success: false,
+      message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${rateLimitStatus.retryAfter} วินาที`,
+      retryAfter: rateLimitStatus.retryAfter
+    });
+  }
+
+  const pin = extractAdminPin(req);
   if (checkAdminPin(pin)) {
+    resetAdminAuthRateLimit(clientIp);
     return res.json({ success: true });
   }
+
+  const failureRecord = recordAdminAuthFailure(clientIp);
+  if (failureRecord.lockUntil && failureRecord.lockUntil > Date.now()) {
+    const retryAfter = Math.max(1, Math.ceil((failureRecord.lockUntil - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      success: false,
+      message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${retryAfter} วินาที`,
+      retryAfter: retryAfter
+    });
+  }
+
   return res.status(401).json({ success: false, message: 'รหัส Admin PIN ไม่ถูกต้อง' });
 });
 
@@ -251,13 +529,8 @@ app.post('/api/admin/verify', (req, res) => {
 // ----------------------------------------------------
 
 // ดึงรายชื่อพนักงานทั้งหมด (สำหรับ Admin)
-app.get('/api/admin/employees', (req, res) => {
+app.get('/api/admin/employees', requireAdminAuth, (req, res) => {
   try {
-    const adminPin = req.headers['x-admin-pin'] || req.query.admin_pin;
-    if (!checkAdminPin(adminPin)) {
-      return res.status(401).json({ message: 'ต้องการสิทธิ์ผู้ดูแลระบบ (Admin PIN ไม่ถูกต้อง)' });
-    }
-
     const employees = db.prepare("SELECT * FROM employees ORDER BY id DESC").all();
     res.json(employees);
   } catch (err) {
@@ -266,12 +539,9 @@ app.get('/api/admin/employees', (req, res) => {
 });
 
 // Admin เพิ่มพนักงานใหม่ที่มีสิทธิ์ใช้
-app.post('/api/admin/employees', (req, res) => {
+app.post('/api/admin/employees', requireAdminAuth, (req, res) => {
   try {
-    const { admin_pin, emp_code, name, department, position } = req.body;
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
+    const { emp_code, name, department, position } = req.body;
 
     if (!emp_code || !emp_code.trim()) {
       return res.status(400).json({ message: 'กรุณาระบุรหัสพนักงาน' });
@@ -301,14 +571,10 @@ app.post('/api/admin/employees', (req, res) => {
 });
 
 // Admin แก้ไขข้อมูลพนักงาน หรือเปิด/ปิดสิทธิ์การใช้งาน (is_active: 0 หรือ 1)
-// Admin แก้ไขข้อมูลพนักงาน หรือเปิด/ปิดสิทธิ์การใช้งาน (is_active: 0 หรือ 1)
-app.put('/api/admin/employees/:id', (req, res) => {
+app.put('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
   try {
     const { id } = req.params;
-    const { admin_pin, emp_code, name, department, position, is_active } = req.body;
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
+    const { emp_code, name, department, position, is_active } = req.body;
 
     const targetEmp = db.prepare("SELECT * FROM employees WHERE id = ?").get(id);
     if (!targetEmp) {
@@ -341,14 +607,9 @@ app.put('/api/admin/employees/:id', (req, res) => {
 });
 
 // Admin ลบพนักงานออกจากระบบสิทธิ์
-app.delete('/api/admin/employees/:id', (req, res) => {
+app.delete('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
   try {
     const { id } = req.params;
-    const { admin_pin } = req.body || req.query || {};
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
-
     db.prepare("DELETE FROM employees WHERE id = ?").run(id);
     res.json({ success: true, message: 'ลบพนักงานออกจากระบบเรียบร้อยแล้ว' });
   } catch (err) {
@@ -359,25 +620,26 @@ app.delete('/api/admin/employees/:id', (req, res) => {
 // ----------------------------------------------------
 // ADMIN: ตั้งค่าการแจ้งเตือนผ่าน LINE
 // ----------------------------------------------------
-app.get('/api/admin/settings/line', (req, res) => {
+app.get('/api/admin/settings/line', requireAdminAuth, (req, res) => {
   try {
-    const adminPin = req.headers['x-admin-pin'] || req.query.admin_pin;
-    if (!checkAdminPin(adminPin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
     const settings = getLineSettings();
-    res.json(settings);
+    const rawToken = settings.token || '';
+    const maskedToken = rawToken ? (rawToken.length > 8 ? rawToken.slice(0, 4) + '***' + rawToken.slice(-4) : '***') : '';
+    res.json({
+      enabled: settings.enabled,
+      type: settings.type,
+      destinationId: settings.destinationId,
+      hasToken: !!rawToken,
+      token: maskedToken
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/admin/settings/line', (req, res) => {
+app.post('/api/admin/settings/line', requireAdminAuth, (req, res) => {
   try {
-    const { admin_pin, enabled, type, token, destinationId } = req.body;
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
+    const { enabled, type, token, destinationId } = req.body;
 
     const setVal = (k, v) => {
       db.prepare(`
@@ -386,10 +648,17 @@ app.post('/api/admin/settings/line', (req, res) => {
       `).run(k, String(v ?? ''));
     };
 
+    const existing = getLineSettings();
+    let finalToken = existing.token;
+    // When updating without providing a new raw token, retain existing token
+    if (token && typeof token === 'string' && !token.includes('***') && token.trim()) {
+      finalToken = token.trim();
+    }
+
     setVal('line_enabled', enabled ? '1' : '0');
     setVal('line_type', type || 'messaging_api');
-    setVal('line_token', token || '');
-    setVal('line_dest_id', destinationId || '');
+    setVal('line_token', finalToken || '');
+    setVal('line_dest_id', destinationId ? destinationId.trim() : '');
 
     res.json({ success: true, message: 'บันทึกการตั้งค่า LINE Notification เรียบร้อยแล้ว' });
   } catch (err) {
@@ -397,13 +666,8 @@ app.post('/api/admin/settings/line', (req, res) => {
   }
 });
 
-app.post('/api/admin/line/test', async (req, res) => {
+app.post('/api/admin/line/test', requireAdminAuth, async (req, res) => {
   try {
-    const { admin_pin } = req.body;
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
-
     const testMessage = `🧪 ทดสอบระบบแจ้งเตือน LINE จากระบบจองห้องประชุม
 ✅ การเชื่อมต่อระบบสำเร็จเรียบร้อย!
 🕒 เวลาทดสอบ: ${new Date().toLocaleTimeString('th-TH')}
@@ -514,12 +778,9 @@ app.get('/api/rooms', (req, res) => {
 });
 
 // Admin กำหนดเพิ่มห้องประชุมใหม่
-app.post('/api/rooms', (req, res) => {
+app.post('/api/rooms', requireAdminAuth, (req, res) => {
   try {
-    const { admin_pin, name, code, capacity, location, color, amenities } = req.body;
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
+    const { name, code, capacity, location, color, amenities } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ message: 'กรุณาระบุชื่อห้องประชุม' });
@@ -541,13 +802,10 @@ app.post('/api/rooms', (req, res) => {
 });
 
 // Admin แก้ไขชื่อห้องและรายละเอียดห้องประชุม
-app.put('/api/rooms/:id', (req, res) => {
+app.put('/api/rooms/:id', requireAdminAuth, (req, res) => {
   try {
     const { id } = req.params;
-    const { admin_pin, code, name, capacity, location, color, amenities } = req.body;
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
-    }
+    const { code, name, capacity, location, color, amenities } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ message: 'กรุณาระบุชื่อห้องประชุม' });
@@ -580,12 +838,12 @@ app.put('/api/rooms/:id', (req, res) => {
 });
 
 // Admin ลบห้องประชุม
-app.delete('/api/rooms/:id', (req, res) => {
+app.delete('/api/rooms/:id', requireAdminAuth, (req, res) => {
   try {
     const { id } = req.params;
-    const { admin_pin } = req.body || req.query || {};
-    if (!checkAdminPin(admin_pin)) {
-      return res.status(401).json({ message: 'รหัส Admin PIN ไม่ถูกต้อง' });
+    const targetRoom = db.prepare("SELECT * FROM rooms WHERE id = ?").get(id);
+    if (!targetRoom) {
+      return res.status(404).json({ message: 'ไม่พบข้อมูลห้องประชุมนี้' });
     }
 
     db.prepare("UPDATE rooms SET is_active = 0 WHERE id = ?").run(id);
@@ -635,19 +893,24 @@ app.get('/api/bookings', (req, res) => {
 // Create Booking
 app.post('/api/bookings', (req, res) => {
   try {
-    const { room, room_id, title, booked_by, department, emp_code, start_at, end_at, note, pin } = req.body;
+    const { room, room_id, title, emp_code, start_at, end_at, note } = req.body;
 
-    // ตรวจสอบสิทธิ์พนักงาน: ต้องเป็นพนักงานที่มีสิทธิ์ (is_active = 1)
-    if (emp_code) {
-      const emp = db.prepare("SELECT * FROM employees WHERE UPPER(emp_code) = UPPER(?)").get(emp_code);
-      if (!emp || emp.is_active === 0) {
-        return res.status(403).json({ message: '⛔ พนักงานรหัสนี้ไม่มีสิทธิ์ใช้งาน หรือถูกระงับสิทธิ์โดยผู้ดูแลระบบ' });
-      }
+    if (!emp_code || typeof emp_code !== 'string' || !emp_code.trim()) {
+      return res.status(400).json({ message: 'กรุณาระบุรหัสพนักงาน (emp_code)' });
     }
 
-    let targetRoomId = room_id;
+    const emp = db.prepare("SELECT * FROM employees WHERE UPPER(emp_code) = UPPER(?)").get(emp_code.trim());
+    if (!emp || emp.is_active === 0) {
+      return res.status(403).json({ message: '⛔ พนักงานรหัสนี้ไม่มีสิทธิ์ใช้งาน หรือถูกระงับสิทธิ์โดยผู้ดูแลระบบ' });
+    }
+
+    // Always derive booked_by and department from verified employee record to prevent spoofing
+    const booked_by = emp.name;
+    const department = emp.department || '';
+
+    let targetRoomId = Number(room_id);
     if (!targetRoomId && room) {
-      const r = db.prepare("SELECT id FROM rooms WHERE name = ? OR code = ?").get(room, room);
+      const r = db.prepare("SELECT id FROM rooms WHERE (name = ? OR code = ?) AND is_active = 1").get(room, room);
       if (r) targetRoomId = r.id;
     }
 
@@ -655,71 +918,81 @@ app.post('/api/bookings', (req, res) => {
       return res.status(400).json({ message: 'กรุณาเลือกห้องประชุม' });
     }
 
-    if (!booked_by || !booked_by.trim()) {
-      return res.status(400).json({ message: 'กรุณาระบุชื่อผู้จอง' });
+    const roomObj = db.prepare("SELECT * FROM rooms WHERE id = ? AND is_active = 1").get(targetRoomId);
+    if (!roomObj) {
+      return res.status(400).json({ message: 'ไม่พบห้องประชุมที่เลือก หรือห้องประชุมถูกปิดใช้งาน' });
     }
 
-    if (!start_at || !end_at) {
-      return res.status(400).json({ message: 'กรุณาระบุวันที่และเวลาที่จอง' });
+    const timeCheck = validateBookingTimes(start_at, end_at);
+    if (!timeCheck.valid) {
+      return res.status(400).json({ message: timeCheck.message });
     }
+    const validStart = timeCheck.startAt;
+    const validEnd = timeCheck.endAt;
 
-    if (new Date(start_at) >= new Date(end_at)) {
-      return res.status(400).json({ message: 'เวลาเริ่มต้องมาก่อนเวลาสิ้นสุดเสมอ' });
-    }
+    const meetingTitle = title && typeof title === 'string' && title.trim() ? title.trim() : 'การประชุมทั่วไป';
 
-    const meetingTitle = title && title.trim() ? title.trim() : 'การประชุมทั่วไป';
+    // Force server-generated random 4-digit PIN (ignore any client-provided PIN)
+    const bookingPin = generateSecurePin();
+    const hashedPin = hashPin(bookingPin);
 
-    // Conflict Check
-    const conflict = findConflict(targetRoomId, start_at, end_at);
-    if (conflict) {
-      const sTime = conflict.start_at.slice(11, 16);
-      const eTime = conflict.end_at.slice(11, 16);
-      return res.status(409).json({
-        message: `⛔ ไม่สามารถจองซ้ำได้! ห้อง ${conflict.room_name} ถูกจองแล้วในช่วงเวลาดังกล่าว`,
-        conflict: {
-          id: conflict.id,
-          title: conflict.title,
-          booked_by: conflict.booked_by,
-          department: conflict.department,
-          start_at: conflict.start_at,
-          end_at: conflict.end_at,
-          time_range: `${sTime} - ${eTime} น.`
-        }
-      });
-    }
-
-    const bookingPin = pin && pin.trim() ? pin.trim() : '1234';
-
-    const stmt = db.prepare(`
-      INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const result = stmt.run(
-      targetRoomId, 
-      (emp_code || '').trim(), 
-      meetingTitle, 
-      booked_by.trim(), 
-      (department || '').trim(), 
-      start_at, 
-      end_at, 
-      (note || '').trim(), 
-      bookingPin
-    );
-
-    // ส่งแจ้งเตือน LINE อัตโนมัติ (Async ไม่บล็อกการจอง)
+    // Atomic conflict check & insertion using transaction
+    db.exec('BEGIN IMMEDIATE');
+    let result;
     try {
-      const roomObj = db.prepare("SELECT name FROM rooms WHERE id = ?").get(targetRoomId);
-      const roomName = roomObj?.name || `ห้อง #${targetRoomId}`;
-      const dateThai = formatBookingThaiDate(start_at);
-      const timeRange = `${start_at.slice(11, 16)} - ${end_at.slice(11, 16)} น.`;
+      const conflict = findConflict(targetRoomId, validStart, validEnd);
+      if (conflict) {
+        db.exec('ROLLBACK');
+        const sTime = conflict.start_at.slice(11, 16);
+        const eTime = conflict.end_at.slice(11, 16);
+        return res.status(409).json({
+          message: `⛔ ไม่สามารถจองซ้ำได้! ห้อง ${conflict.room_name} ถูกจองแล้วในช่วงเวลาดังกล่าว`,
+          conflict: {
+            id: conflict.id,
+            title: conflict.title,
+            booked_by: conflict.booked_by,
+            department: conflict.department,
+            start_at: conflict.start_at,
+            end_at: conflict.end_at,
+            time_range: `${sTime} - ${eTime} น.`
+          }
+        });
+      }
+
+      const stmt = db.prepare(`
+        INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      result = stmt.run(
+        targetRoomId,
+        emp.emp_code,
+        meetingTitle,
+        booked_by,
+        department,
+        validStart,
+        validEnd,
+        (note && typeof note === 'string' ? note.trim() : ''),
+        hashedPin
+      );
+      db.exec('COMMIT');
+    } catch (txErr) {
+      try { db.exec('ROLLBACK'); } catch (_) {}
+      throw txErr;
+    }
+
+    // Async LINE notification
+    try {
+      const roomName = roomObj.name || `ห้อง #${targetRoomId}`;
+      const dateThai = formatBookingThaiDate(validStart);
+      const timeRange = `${validStart.slice(11, 16)} - ${validEnd.slice(11, 16)} น.`;
 
       const lineMsg = `🔔 มีการจองห้องประชุมใหม่!
 🏢 ห้อง: ${roomName}
 📌 หัวข้อ: ${meetingTitle}
-👤 ผู้จอง: ${booked_by.trim()}${department ? ' (' + department.trim() + ')' : ''}
+👤 ผู้จอง: ${booked_by}${department ? ' (' + department + ')' : ''}
 🗓️ วันที่: ${dateThai}
 ⏰ เวลา: ${timeRange}
-${(note && note.trim()) ? '💬 หมายเหตุ: ' + note.trim() + '\n' : ''}✅ สถานะ: ยืนยันการจองเรียบร้อย`;
+${(note && typeof note === 'string' && note.trim()) ? '💬 หมายเหตุ: ' + note.trim() + '\n' : ''}✅ สถานะ: ยืนยันการจองเรียบร้อย`;
 
       sendLineNotification(lineMsg).catch(() => {});
     } catch (e) {}
@@ -739,14 +1012,22 @@ ${(note && note.trim()) ? '💬 หมายเหตุ: ' + note.trim() + '\n'
 app.delete('/api/bookings/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const pin = req.body?.pin || req.query?.pin;
+
+    if (req.query && (req.query.pin || req.query.admin_pin)) {
+      return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง PIN ผ่าน query string' });
+    }
+
+    const pin = req.body?.pin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
 
     const booking = db.prepare("SELECT * FROM bookings WHERE id = ?").get(id);
     if (!booking) {
       return res.status(404).json({ message: 'ไม่พบรายการจองนี้' });
     }
 
-    if (!checkAdminPin(pin) && pin !== booking.pin) {
+    const isAdmin = pin ? checkAdminPin(pin) : false;
+    const isBookingPin = pin ? verifyPinHash(pin, booking.pin) : false;
+
+    if (!isAdmin && !isBookingPin) {
       return res.status(401).json({ 
         message: 'รหัส PIN ไม่ถูกต้อง (กรุณาระบุรหัส PIN 4 หลักของผู้จอง หรือรหัสแอดมิน)' 
       });
@@ -781,7 +1062,13 @@ app.delete('/api/bookings/:id', (req, res) => {
 app.put('/api/bookings/:id', (req, res) => {
   try {
     const { id } = req.params;
-    const { pin, room_id, title, booked_by, department, start_at, end_at, note } = req.body;
+
+    if (req.query && (req.query.pin || req.query.admin_pin)) {
+      return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง PIN ผ่าน query string' });
+    }
+
+    const { pin: bodyPin, room_id, title, booked_by, department, start_at, end_at, note } = req.body || {};
+    const pin = bodyPin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
 
     const booking = db.prepare("SELECT * FROM bookings WHERE id = ?").get(id);
     if (!booking) {
@@ -789,46 +1076,63 @@ app.put('/api/bookings/:id', (req, res) => {
     }
 
     // Verify PIN (allow booking pin or admin pin)
-    if (!checkAdminPin(pin) && pin !== booking.pin) {
+    const isAdmin = pin ? checkAdminPin(pin) : false;
+    const isBookingPin = pin ? verifyPinHash(pin, booking.pin) : false;
+
+    if (!isAdmin && !isBookingPin) {
       return res.status(401).json({ message: 'รหัส PIN ไม่ถูกต้อง (กรุณาระบุรหัส PIN ของผู้จอง หรือรหัสแอดมิน)' });
     }
 
     const targetRoomId = Number(room_id || booking.room_id);
+    const roomObj = db.prepare("SELECT * FROM rooms WHERE id = ? AND is_active = 1").get(targetRoomId);
+    if (!roomObj) {
+      return res.status(400).json({ message: 'ไม่พบห้องประชุมที่เลือก หรือห้องประชุมถูกปิดใช้งาน' });
+    }
+
     const newStart = start_at || booking.start_at;
     const newEnd = end_at || booking.end_at;
-
-    if (new Date(newStart) >= new Date(newEnd)) {
-      return res.status(400).json({ message: 'เวลาเริ่มต้องมาก่อนเวลาสิ้นสุดเสมอ' });
+    const timeCheck = validateBookingTimes(newStart, newEnd);
+    if (!timeCheck.valid) {
+      return res.status(400).json({ message: timeCheck.message });
     }
+    const validStart = timeCheck.startAt;
+    const validEnd = timeCheck.endAt;
 
-    // Conflict Check (exclude current booking ID)
-    const conflict = findConflict(targetRoomId, newStart, newEnd, id);
-    if (conflict) {
-      const sTime = conflict.start_at.slice(11, 16);
-      const eTime = conflict.end_at.slice(11, 16);
-      return res.status(409).json({
-        message: `⛔ ไม่สามารถแก้ไขได้! ห้อง ${conflict.room_name} ถูกจองแล้วในช่วงเวลาดังกล่าว (${sTime} - ${eTime} น.)`,
-        conflict
-      });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      // Conflict Check (exclude current booking ID)
+      const conflict = findConflict(targetRoomId, validStart, validEnd, id);
+      if (conflict) {
+        db.exec('ROLLBACK');
+        const sTime = conflict.start_at.slice(11, 16);
+        const eTime = conflict.end_at.slice(11, 16);
+        return res.status(409).json({
+          message: `⛔ ไม่สามารถแก้ไขได้! ห้อง ${conflict.room_name} ถูกจองแล้วในช่วงเวลาดังกล่าว (${sTime} - ${eTime} น.)`,
+          conflict
+        });
+      }
+
+      const newTitle = (title && typeof title === 'string' && title.trim()) ? title.trim() : booking.title;
+      const newBookedBy = (booked_by && typeof booked_by === 'string' && booked_by.trim()) ? booked_by.trim() : booking.booked_by;
+      const newDept = department !== undefined ? String(department).trim() : booking.department;
+      const newNote = note !== undefined ? String(note).trim() : booking.note;
+
+      db.prepare(`
+        UPDATE bookings
+        SET room_id = ?, title = ?, booked_by = ?, department = ?, start_at = ?, end_at = ?, note = ?
+        WHERE id = ?
+      `).run(targetRoomId, newTitle, newBookedBy, newDept, validStart, validEnd, newNote, id);
+      db.exec('COMMIT');
+    } catch (txErr) {
+      try { db.exec('ROLLBACK'); } catch (_) {}
+      throw txErr;
     }
-
-    const newTitle = (title && title.trim()) ? title.trim() : booking.title;
-    const newBookedBy = (booked_by && booked_by.trim()) ? booked_by.trim() : booking.booked_by;
-    const newDept = department !== undefined ? department.trim() : booking.department;
-    const newNote = note !== undefined ? note.trim() : booking.note;
-
-    db.prepare(`
-      UPDATE bookings
-      SET room_id = ?, title = ?, booked_by = ?, department = ?, start_at = ?, end_at = ?, note = ?
-      WHERE id = ?
-    `).run(targetRoomId, newTitle, newBookedBy, newDept, newStart, newEnd, newNote, id);
 
     // ส่งแจ้งเตือนการแก้ไขทาง LINE
     try {
-      const roomObj = db.prepare("SELECT name FROM rooms WHERE id = ?").get(targetRoomId);
-      const roomName = roomObj?.name || `ห้อง #${targetRoomId}`;
-      const dateThai = formatBookingThaiDate(newStart);
-      const timeRange = `${newStart.slice(11, 16)} - ${newEnd.slice(11, 16)} น.`;
+      const roomName = roomObj.name || `ห้อง #${targetRoomId}`;
+      const dateThai = formatBookingThaiDate(validStart);
+      const timeRange = `${validStart.slice(11, 16)} - ${validEnd.slice(11, 16)} น.`;
 
       const lineMsg = `✏️ มีการแก้ไขข้อมูลการจองห้องประชุม!
 🏢 ห้อง: ${roomName}
@@ -848,10 +1152,20 @@ ${newNote ? '💬 หมายเหตุ: ' + newNote + '\n' : ''}✅ สถ�
 });
 
 // Kiosk Quick Book
-app.post('/api/kiosk/quick-book', (req, res) => {
+app.post('/api/kiosk/quick-book', requireKioskAuth, (req, res) => {
   try {
     const { room_id, minutes, booked_by, title } = req.body;
-    const duration = parseInt(minutes, 10) || 30;
+    const allowedDurations = [15, 30, 45, 60];
+    const duration = parseInt(minutes, 10);
+
+    if (!allowedDurations.includes(duration)) {
+      return res.status(400).json({ message: 'ระยะเวลาต้องเป็น 15, 30, 45 หรือ 60 นาที' });
+    }
+
+    const room = db.prepare("SELECT * FROM rooms WHERE id = ? AND is_active = 1").get(room_id);
+    if (!room) {
+      return res.status(400).json({ message: 'ไม่พบห้องประชุม หรือห้องถูกปิดใช้งาน' });
+    }
 
     const now = new Date();
     const coeff = 1000 * 60 * 5;
@@ -870,34 +1184,47 @@ app.post('/api/kiosk/quick-book', (req, res) => {
     const startAt = formatIso(roundedStart);
     const endAt = formatIso(roundedEnd);
 
-    const conflict = findConflict(room_id, startAt, endAt);
-    if (conflict) {
-      return res.status(409).json({
-        message: `ห้องไม่ว่างในช่วงเวลาดังกล่าว ชนกับ "${conflict.title}"`
-      });
-    }
+    const kioskPin = generateSecurePin();
+    const hashedPin = hashPin(kioskPin);
 
-    const stmt = db.prepare(`
-      INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const result = stmt.run(
-      room_id,
-      'KIOSK',
-      title || `จองด่วนหน้าห้อง (${duration} นาที)`,
-      booked_by || 'พนักงานหน้าห้อง',
-      'Walk-in',
-      startAt,
-      endAt,
-      'จองผ่านหน้าจอหน้าห้องประชุม',
-      '9999'
-    );
+    db.exec('BEGIN IMMEDIATE');
+    let result;
+    try {
+      const conflict = findConflict(room_id, startAt, endAt);
+      if (conflict) {
+        db.exec('ROLLBACK');
+        return res.status(409).json({
+          message: `ห้องไม่ว่างในช่วงเวลาดังกล่าว ชนกับ "${conflict.title}"`
+        });
+      }
+
+      const stmt = db.prepare(`
+        INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      result = stmt.run(
+        room_id,
+        'KIOSK',
+        title || `จองด่วนหน้าห้อง (${duration} นาที)`,
+        booked_by || 'พนักงานหน้าห้อง',
+        'Walk-in',
+        startAt,
+        endAt,
+        'จองผ่านหน้าจอหน้าห้องประชุม',
+        hashedPin
+      );
+      db.exec('COMMIT');
+    } catch (txErr) {
+      try { db.exec('ROLLBACK'); } catch (_) {}
+      throw txErr;
+    }
 
     res.status(201).json({
       success: true,
       id: result.lastInsertRowid,
       start_at: startAt,
-      end_at: endAt
+      end_at: endAt,
+      pin: kioskPin
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -967,20 +1294,39 @@ app.get('/download/:filename', (req, res) => {
 });
 
 // Start Server
-const server = app.listen(PORT, '0.0.0.0', () => {
-  const localIp = getLocalIp();
-  console.log('\n=============================================================');
-  console.log('       🚀 ระบบจองห้องประชุมสำหรับพนักงานองค์กร               ');
-  console.log('=============================================================');
-  console.log(` 💻 เครื่องนี้ (Localhost):   http://localhost:${PORT}`);
-  console.log(` 🌐 ทุกอุปกรณ์ในวง Wi-Fi/LAN: http://${localIp}:${PORT}`);
-  console.log('-------------------------------------------------------------');
-  console.log(` 📲 พนักงานสามารถแสกน QR Code จากมือถือเพื่อเข้าใช้งานได้ทันที`);
-  console.log(' 🛡️  รหัส Master Admin PIN: 8888');
-  console.log('=============================================================\n');
+let server = null;
+if (require.main === module) {
+  server = app.listen(PORT, '0.0.0.0', () => {
+    const localIp = getLocalIp();
+    console.log('\n=============================================================');
+    console.log('       🚀 ระบบจองห้องประชุมสำหรับพนักงานองค์กร               ');
+    console.log('=============================================================');
+    console.log(` 💻 เครื่องนี้ (Localhost):   http://localhost:${PORT}`);
+    console.log(` 🌐 ทุกอุปกรณ์ในวง Wi-Fi/LAN: http://${localIp}:${PORT}`);
+    console.log('-------------------------------------------------------------');
+    console.log(` 📲 พนักงานสามารถแสกน QR Code จากมือถือเพื่อเข้าใช้งานได้ทันที`);
+    console.log('=============================================================\n');
 
-  QRCode.toString(`http://${localIp}:${PORT}`, { type: 'terminal', small: true }, (err, qrStr) => {
-    if (!err) console.log(qrStr);
+    QRCode.toString(`http://${localIp}:${PORT}`, { type: 'terminal', small: true }, (err, qrStr) => {
+      if (!err) console.log(qrStr);
+    });
   });
-});
+}
 
+module.exports = {
+  app,
+  server,
+  db,
+  checkAdminPin,
+  verifyPinHash,
+  hashPin,
+  generateSecurePin,
+  parseAndValidateIsoDate,
+  validateBookingTimes,
+  findConflict,
+  resetAdminAuthRateLimit,
+  checkAdminRateLimit,
+  recordAdminAuthFailure,
+  getLocalIp,
+  setLineNotificationTransport
+};

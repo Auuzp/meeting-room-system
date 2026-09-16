@@ -591,7 +591,7 @@ async function handleBookingSubmit(e) {
   const department = modalDepartment.value.trim();
   const title = modalTitle.value.trim() || 'การประชุมทั่วไป';
   const note = modalNote.value.trim();
-  const pin = modalPin.value.trim() || '1234';
+  const pin = modalPin.value.trim();
 
   if (!date || !startTime || !endTime) {
     modalBookingError.textContent = 'กรุณาระบุวันที่และเวลาให้ครบถ้วน';
@@ -613,8 +613,7 @@ async function handleBookingSubmit(e) {
     department,
     start_at: `${date}T${startTime}:00`,
     end_at: `${date}T${endTime}:00`,
-    note,
-    pin
+    note
   };
 
   const btn = document.getElementById('modalSubmitBtn');
