@@ -13,8 +13,25 @@ process.env.ADMIN_PIN = 'admin_super_secret_pin';
 process.env.KIOSK_SECRET = 'kiosk_super_secret_token';
 process.env.PORT = '0'; // Ephemeral port
 
+const originalFetch = global.fetch;
+global.fetch = async () => {
+  throw new Error('External fetch is disabled during tests');
+};
+
 // 2. Import server (Database and routes initialize using tempDbPath)
-const { app, db, resetAdminAuthRateLimit } = require('../server');
+const { app, db, resetAdminAuthRateLimit, setLineNotificationTransport } = require('../server');
+
+// All LINE notifications are captured in-process. Tests must never contact LINE
+// or any other external service.
+const lineNotificationCalls = [];
+setLineNotificationTransport(async (url, options) => {
+  lineNotificationCalls.push({ url, options });
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ testOnly: true })
+  };
+});
 
 // Baseline SHA256 of production database data/meeting_rooms.db
 const BASELINE_PROD_DB_HASH = '52A371445CE0812CA930AEA418E7D7E9D6459F1778A6E14CB56592F08F5A08AF';
@@ -83,7 +100,7 @@ async function runTests() {
   // Seed test database
   db.exec(`
     INSERT INTO rooms (code, name, capacity, location, color, amenities, is_active)
-    VALUES 
+    VALUES
       ('ROOM-A', 'ห้องประชุม A (Smart Board)', 12, 'ชั้น 2 อาคาร A', '#ff6a00', '["tv","wifi"]', 1),
       ('ROOM-B', 'ห้องประชุม B (Boardroom)', 20, 'ชั้น 3 อาคาร A', '#2563eb', '["projector","mic"]', 1),
       ('ROOM-OFF', 'ห้องปิดปรับปรุง (Inactive)', 6, 'ชั้น 1 อาคาร B', '#64748b', '[]', 0);
@@ -96,9 +113,9 @@ async function runTests() {
 
     INSERT INTO settings (key, value) VALUES ('line_enabled', '1')
     ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-    INSERT INTO settings (key, value) VALUES ('line_token', 'SECURE_LINE_SECRET_TOKEN_12345')
+    INSERT INTO settings (key, value) VALUES ('line_token', 'test-only-token')
     ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-    INSERT INTO settings (key, value) VALUES ('line_dest_id', 'DEST_LINE_GROUP_001')
+    INSERT INTO settings (key, value) VALUES ('line_dest_id', 'test-only-destination')
     ON CONFLICT(key) DO UPDATE SET value = excluded.value;
   `);
 
@@ -353,7 +370,7 @@ async function runTests() {
     const concurrentTimeStart = '2026-11-16T10:00:00';
     const concurrentTimeEnd = '2026-11-16T11:00:00';
 
-    const concurrentRequests = Array.from({ length: 5 }, (_, i) => 
+    const concurrentRequests = Array.from({ length: 5 }, (_, i) =>
       request('POST', '/api/bookings', {
         room_id: 2,
         emp_code: 'EMP101',
@@ -471,19 +488,21 @@ async function runTests() {
     assert(lineGetRes.status === 200, 'Admin can read LINE settings (200)');
     assert(lineGetRes.body.hasToken === true, 'Settings response reports hasToken: true');
     assert(lineGetRes.body.token.includes('***'), 'LINE token is masked with asterisks (***), not plaintext', lineGetRes.body.token);
-    assert(!lineGetRes.body.token.includes('SECURE_LINE_SECRET_TOKEN_12345'), 'Raw LINE token is not leaked in response');
+    assert(!lineGetRes.body.token.includes('test-only-token'), 'Raw LINE token is not leaked in response');
 
     // Updating settings without changing token retains existing token
     const lineUpdateRes = await request('POST', '/api/admin/settings/line', {
       enabled: true,
       type: 'messaging_api',
-      destinationId: 'DEST_LINE_GROUP_UPDATED',
+      destinationId: 'test-only-destination-updated',
       token: lineGetRes.body.token // Send back the masked token
     }, { 'x-admin-pin': adminPin });
     assert(lineUpdateRes.status === 200, 'Settings updated successfully');
 
     const lineDbRow = db.prepare("SELECT value FROM settings WHERE key = 'line_token'").get();
-    assert(lineDbRow.value === 'SECURE_LINE_SECRET_TOKEN_12345', 'Existing token in DB is safely preserved');
+    assert(lineDbRow.value === 'test-only-token', 'Existing token in DB is safely preserved');
+    assert(lineNotificationCalls.length > 0, 'LINE notifications use the injected test transport without external network access');
+    assert(lineNotificationCalls.every(call => call.url.startsWith('https://api.line.me/')), 'Injected transport captured only expected LINE API calls');
 
     // -----------------------------------------------------------------
     // 8. Kiosk Endpoint & Quick-Book Security
@@ -592,11 +611,12 @@ async function runTests() {
     process.exitCode = 1;
   } finally {
     if (server) {
-      server.close();
+      await new Promise((resolve) => server.close(resolve));
     }
     if (db) {
       try { db.close(); } catch (_) {}
     }
+    global.fetch = originalFetch;
     // Cleanup temporary test database files
     try {
       if (fs.existsSync(tempDir)) {
