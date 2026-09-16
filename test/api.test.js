@@ -19,7 +19,7 @@ global.fetch = async () => {
 };
 
 // 2. Import server (Database and routes initialize using tempDbPath)
-const { app, db, resetAdminAuthRateLimit, setLineNotificationTransport } = require('../server');
+const { app, db, resetAdminAuthRateLimit, setLineNotificationTransport, verifyPinHash } = require('../server');
 
 // All LINE notifications are captured in-process. Tests must never contact LINE
 // or any other external service.
@@ -270,28 +270,70 @@ async function runTests() {
     });
     assert(autoPinBooking.status === 201, 'Booking created with auto PIN (201)');
     const returnedPin = autoPinBooking.body.pin;
-    assert(/^\d{4}$/.test(returnedPin), 'Generated PIN is a 4-digit numeric string', returnedPin);
+    assert(/^\d{4}$/.test(returnedPin), 'Generated PIN is a 4-digit numeric string');
 
-    // Verify DB does not store plaintext PIN
+    // Verify DB does not store plaintext PIN and conforms to serialized scrypt structure
     const autoPinDbRow = db.prepare("SELECT pin FROM bookings WHERE id = ?").get(autoPinBooking.body.id);
-    assert(autoPinDbRow.pin.startsWith('$scrypt$'), 'PIN is stored as scrypt hash in database, not plaintext');
-    assert(!autoPinDbRow.pin.includes(returnedPin), 'Plaintext PIN is not present in stored hash string');
+    const autoPinParts = autoPinDbRow.pin.split('$');
+    assert(
+      autoPinParts.length === 4 &&
+      autoPinParts[1] === 'scrypt' &&
+      /^[0-9a-f]{32}$/i.test(autoPinParts[2]) &&
+      /^[0-9a-f]{128}$/i.test(autoPinParts[3]),
+      'PIN is stored as serialized scrypt hash in database, not plaintext'
+    );
+    assert(
+      autoPinDbRow.pin !== returnedPin && verifyPinHash(returnedPin, autoPinDbRow.pin),
+      'PIN hash verifies with generated PIN and is not stored as plaintext'
+    );
 
-    // Test that client-supplied booking PIN is ignored and server generates random PIN
-    const ignoreClientPinBooking = await request('POST', '/api/bookings', {
-      room_id: roomA.id,
-      emp_code: 'EMP101',
-      title: 'พยายามระบุ PIN เองเป็น 1234',
-      start_at: '2026-11-10T12:00:00',
-      end_at: '2026-11-10T13:00:00',
-      pin: '1234'
-    });
+    // Test that client-supplied booking PIN is ignored and server generates random PIN deterministically
+    const origRandomInt = crypto.randomInt;
+    const randomIntCalls = [];
+    let ignoreClientPinBooking;
+    try {
+      crypto.randomInt = (min, max) => {
+        randomIntCalls.push({ min, max });
+        return 7890;
+      };
+
+      ignoreClientPinBooking = await request('POST', '/api/bookings', {
+        room_id: roomA.id,
+        emp_code: 'EMP101',
+        title: 'พยายามระบุ PIN เองเป็น 1234',
+        start_at: '2026-11-10T12:00:00',
+        end_at: '2026-11-10T13:00:00',
+        pin: '1234'
+      });
+    } finally {
+      crypto.randomInt = origRandomInt;
+    }
+
     assert(ignoreClientPinBooking.status === 201, 'Booking with client PIN payload created successfully (201)');
-    assert(ignoreClientPinBooking.body.pin !== '1234', 'Server ignores client-sent PIN 1234 and generates random PIN', ignoreClientPinBooking.body.pin);
-    assert(/^\d{4}$/.test(ignoreClientPinBooking.body.pin), 'Server-generated PIN is a 4-digit number', ignoreClientPinBooking.body.pin);
+    assert(
+      randomIntCalls.length > 0 && randomIntCalls[0].min === 1000 && randomIntCalls[0].max === 10000,
+      'Server invokes crypto.randomInt within 4-digit bounds [1000, 10000)'
+    );
+    assert(
+      ignoreClientPinBooking.body.pin === '7890',
+      'Server response matches mocked generation and ignores client-provided PIN'
+    );
     const ignorePinDbRow = db.prepare("SELECT pin FROM bookings WHERE id = ?").get(ignoreClientPinBooking.body.id);
-    assert(ignorePinDbRow.pin.startsWith('$scrypt$'), 'Stored PIN has scrypt prefix');
-    assert(!ignorePinDbRow.pin.includes('1234'), 'Stored PIN hash does not contain client PIN 1234');
+    const ignorePinParts = ignorePinDbRow.pin.split('$');
+    assert(
+      ignorePinParts.length === 4 &&
+      ignorePinParts[1] === 'scrypt' &&
+      /^[0-9a-f]{32}$/i.test(ignorePinParts[2]) &&
+      /^[0-9a-f]{128}$/i.test(ignorePinParts[3]),
+      'Stored PIN conforms to serialized scrypt structure'
+    );
+    assert(
+      ignorePinDbRow.pin !== '7890' &&
+      ignorePinDbRow.pin !== '1234' &&
+      verifyPinHash('7890', ignorePinDbRow.pin) &&
+      !verifyPinHash('1234', ignorePinDbRow.pin),
+      'Stored PIN hash verifies server-generated PIN and rejects client PIN without plaintext storage'
+    );
 
     // Reject PIN in query string for cancel
     const cancelQueryRes = await request('DELETE', `/api/bookings/${autoPinBooking.body.id}?pin=${returnedPin}`);
@@ -487,7 +529,7 @@ async function runTests() {
     const lineGetRes = await request('GET', '/api/admin/settings/line', null, { 'x-admin-pin': adminPin });
     assert(lineGetRes.status === 200, 'Admin can read LINE settings (200)');
     assert(lineGetRes.body.hasToken === true, 'Settings response reports hasToken: true');
-    assert(lineGetRes.body.token.includes('***'), 'LINE token is masked with asterisks (***), not plaintext', lineGetRes.body.token);
+    assert(lineGetRes.body.token.includes('***'), 'LINE token is masked with asterisks (***), not plaintext');
     assert(!lineGetRes.body.token.includes('test-only-token'), 'Raw LINE token is not leaked in response');
 
     // Updating settings without changing token retains existing token
@@ -551,15 +593,37 @@ async function runTests() {
     assert(kioskInactiveRoom.status === 400, 'Rejects quick-book on inactive room (400)');
 
     // Valid quick-book with secret
-    const kioskOkRes = await request('POST', '/api/kiosk/quick-book', {
-      room_id: roomA.id,
-      minutes: 30
-    }, { 'x-kiosk-secret': kioskSecret });
+    const origKioskRandomInt = crypto.randomInt;
+    let kioskRandomIntCalled = false;
+    let kioskOkRes;
+    try {
+      crypto.randomInt = (min, max) => {
+        kioskRandomIntCalled = true;
+        return 6543;
+      };
+      kioskOkRes = await request('POST', '/api/kiosk/quick-book', {
+        room_id: roomA.id,
+        minutes: 30
+      }, { 'x-kiosk-secret': kioskSecret });
+    } finally {
+      crypto.randomInt = origKioskRandomInt;
+    }
     assert(kioskOkRes.status === 201, 'Kiosk quick-book succeeded with valid secret (201)');
-    assert(kioskOkRes.body.pin !== '9999', 'Kiosk generates random secure PIN, not hardcoded 9999', kioskOkRes.body.pin);
+    assert(
+      kioskRandomIntCalled && kioskOkRes.body.pin === '6543',
+      'Kiosk generates server-side secure PIN via crypto.randomInt'
+    );
 
     const kioskDbRow = db.prepare("SELECT pin FROM bookings WHERE id = ?").get(kioskOkRes.body.id);
-    assert(kioskDbRow.pin.startsWith('$scrypt$'), 'Kiosk booking PIN is stored as scrypt hash in database');
+    const kioskPinParts = kioskDbRow.pin.split('$');
+    assert(
+      kioskPinParts.length === 4 &&
+      kioskPinParts[1] === 'scrypt' &&
+      /^[0-9a-f]{32}$/i.test(kioskPinParts[2]) &&
+      /^[0-9a-f]{128}$/i.test(kioskPinParts[3]) &&
+      verifyPinHash('6543', kioskDbRow.pin),
+      'Kiosk booking PIN is stored as scrypt hash in database'
+    );
 
     // -----------------------------------------------------------------
     // 9. Static Assets & System Info
