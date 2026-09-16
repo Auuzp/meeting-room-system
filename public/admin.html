@@ -125,6 +125,7 @@
             </div>
           </div>
           <div class="nav-actions">
+            <button id="adminLogoutBtn" class="btn btn-secondary btn-sm" style="display:none;" onclick="logoutAdmin()">🚪 ออกจากระบบ Admin</button>
             <a href="/download/meeting-room-system-ready.zip" class="btn btn-secondary btn-sm" title="ดาวน์โหลดไฟล์ทั้งหมด (.ZIP)">📥 โหลดไฟล์ระบบ (.ZIP)</a>
             <a href="/" class="btn btn-secondary btn-sm">⬅️ กลับหน้าหลัก Dashboard</a>
             <a href="/manual.html" class="btn btn-secondary btn-sm" target="_blank">📖 คู่มือการใช้งาน</a>
@@ -289,7 +290,7 @@
 
               <div class="field" id="fieldLineDest">
                 <label for="lineDestId">Destination ID (User ID หรือ Group ID ที่ต้องการให้ส่งไป) *</label>
-                <input id="lineDestId" placeholder="เช่น U12345678... (User ID) หรือ C12345678... (Group ID)" style="font-family:monospace;" />
+                <input id="lineDestId" placeholder="เช่น U... (User ID) หรือ C... (Group ID)" style="font-family:monospace;" />
                 <small style="color:var(--muted); font-size:12px; margin-top:4px; display:block;">
                   นำบอทเข้ากลุ่ม LINE ของบริษัท แล้วคัดลอก Group ID หรือ User ID มาวางที่นี่
                 </small>
@@ -449,22 +450,35 @@
   </div>
 
   <script>
-    let adminPin = localStorage.getItem('admin_pin') || sessionStorage.getItem('admin_pin') || '';
+    // Admin PIN stored ONLY in sessionStorage (or memory) - NEVER in localStorage
+    try { localStorage.removeItem('admin_pin'); } catch (_) {}
+    let adminPin = sessionStorage.getItem('admin_pin') || '';
     let rooms = [];
     let employees = [];
 
     function getValidAdminPin() {
       if (!adminPin) {
-        adminPin = localStorage.getItem('admin_pin') || sessionStorage.getItem('admin_pin') || '';
+        adminPin = sessionStorage.getItem('admin_pin') || '';
       }
       if (!adminPin) {
-        adminPin = prompt('กรุณาระบุรหัส Admin PIN เพื่อยืนยัน (ค่าตั้งต้นคือ 8888):', '8888') || '';
+        adminPin = prompt('กรุณาระบุรหัส Admin PIN เพื่อยืนยัน:') || '';
         if (adminPin) {
           sessionStorage.setItem('admin_pin', adminPin);
-          localStorage.setItem('admin_pin', adminPin);
         }
       }
       return adminPin;
+    }
+
+    function logoutAdmin() {
+      adminPin = '';
+      sessionStorage.removeItem('admin_pin');
+      try { localStorage.removeItem('admin_pin'); } catch (_) {}
+      document.getElementById('authGate').style.display = 'block';
+      document.getElementById('adminPanel').style.display = 'none';
+      const logoutBtn = document.getElementById('adminLogoutBtn');
+      if (logoutBtn) logoutBtn.style.display = 'none';
+      const pinInput = document.getElementById('adminPinInput');
+      if (pinInput) pinInput.value = '';
     }
 
     const amenityMap = {
@@ -495,9 +509,10 @@
         if (res.ok) {
           adminPin = pin;
           sessionStorage.setItem('admin_pin', pin);
-          localStorage.setItem('admin_pin', pin);
           document.getElementById('authGate').style.display = 'none';
           document.getElementById('adminPanel').style.display = 'block';
+          const logoutBtn = document.getElementById('adminLogoutBtn');
+          if (logoutBtn) logoutBtn.style.display = 'inline-flex';
           loadAdminRooms();
           loadAdminEmployees();
         } else {

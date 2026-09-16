@@ -75,7 +75,7 @@ db.exec(`
     start_at TEXT NOT NULL,
     end_at TEXT NOT NULL,
     note TEXT,
-    pin TEXT DEFAULT '0000',
+    pin TEXT,
     status TEXT DEFAULT 'confirmed',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(room_id) REFERENCES rooms(id)
@@ -161,13 +161,14 @@ function recordAdminAuthFailure(ip, maxFailures = 5, lockDurationMs = 60000) {
     record.lockUntil = now + lockDurationMs;
   }
   adminRateLimitMap.set(ip, record);
+  return record;
 }
 
 function resetAdminAuthRateLimit(ip) {
   adminRateLimitMap.delete(ip);
 }
 
-// Initialize Settings & Migration (Strictly NO fallback 8888)
+// Initialize Settings & Migration (Strictly NO fallback default PIN)
 if (process.env.ADMIN_PIN && process.env.ADMIN_PIN.trim()) {
   const hashed = hashPin(process.env.ADMIN_PIN.trim());
   db.prepare(`
@@ -206,25 +207,11 @@ function extractAdminPin(req) {
 }
 
 // Helper: Check Admin PIN
-function checkAdminPin(pin, clientIp = null) {
-  if (!pin) {
-    if (clientIp) recordAdminAuthFailure(clientIp);
-    return false;
-  }
+function checkAdminPin(pin) {
+  if (!pin) return false;
   const row = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get();
-  if (!row || !row.value) {
-    if (clientIp) recordAdminAuthFailure(clientIp);
-    return false;
-  }
-  const valid = verifyPinHash(pin, row.value);
-  if (clientIp) {
-    if (valid) {
-      resetAdminAuthRateLimit(clientIp);
-    } else {
-      recordAdminAuthFailure(clientIp);
-    }
-  }
-  return valid;
+  if (!row || !row.value) return false;
+  return verifyPinHash(pin, row.value);
 }
 
 // Middleware: Require Admin Authentication
@@ -236,7 +223,7 @@ function requireAdminAuth(req, res, next) {
   const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
   const rateLimitStatus = checkAdminRateLimit(clientIp);
   if (!rateLimitStatus.allowed) {
-    res.setHeader('Retry-After', rateLimitStatus.retryAfter);
+    res.setHeader('Retry-After', String(rateLimitStatus.retryAfter));
     return res.status(429).json({
       message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${rateLimitStatus.retryAfter} วินาที`,
       retryAfter: rateLimitStatus.retryAfter
@@ -244,13 +231,25 @@ function requireAdminAuth(req, res, next) {
   }
 
   const pin = extractAdminPin(req);
-  if (!checkAdminPin(pin, clientIp)) {
-    return res.status(401).json({ message: 'ต้องการสิทธิ์ผู้ดูแลระบบ (Admin PIN ไม่ถูกต้อง)' });
+  if (checkAdminPin(pin)) {
+    resetAdminAuthRateLimit(clientIp);
+    return next();
   }
-  next();
+
+  const failureRecord = recordAdminAuthFailure(clientIp);
+  if (failureRecord.lockUntil && failureRecord.lockUntil > Date.now()) {
+    const retryAfter = Math.max(1, Math.ceil((failureRecord.lockUntil - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${retryAfter} วินาที`,
+      retryAfter: retryAfter
+    });
+  }
+
+  return res.status(401).json({ message: 'ต้องการสิทธิ์ผู้ดูแลระบบ (Admin PIN ไม่ถูกต้อง)' });
 }
 
-// Middleware: Require Kiosk Authentication (Strict: NO default secret)
+// Middleware: Require Kiosk Authentication (Strict: NO default secret, Header ONLY)
 function requireKioskAuth(req, res, next) {
   if (req.query && (req.query.kiosk_secret || req.query.secret)) {
     return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง Kiosk Secret ผ่าน query string' });
@@ -261,15 +260,7 @@ function requireKioskAuth(req, res, next) {
     return res.status(401).json({ message: 'Kiosk service is not configured (missing KIOSK_SECRET)' });
   }
 
-  let secret = req.headers['x-kiosk-secret'];
-  if (!secret && req.headers.authorization) {
-    const auth = req.headers.authorization.trim();
-    if (auth.startsWith('Bearer ')) {
-      secret = auth.slice(7).trim();
-    } else {
-      secret = auth;
-    }
-  }
+  const secret = req.headers['x-kiosk-secret'];
   if (!secret) {
     return res.status(401).json({ message: 'ต้องการสิทธิ์ Kiosk (กรุณาระบุ X-Kiosk-Secret header)' });
   }
@@ -284,13 +275,22 @@ function requireKioskAuth(req, res, next) {
 
 // Utility: Get Local IPv4 Address
 function getLocalIp() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const net of interfaces[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        return net.address;
+  try {
+    const interfaces = os.networkInterfaces();
+    if (interfaces && typeof interfaces === 'object') {
+      for (const name of Object.keys(interfaces)) {
+        const ifaceList = interfaces[name];
+        if (Array.isArray(ifaceList)) {
+          for (const net of ifaceList) {
+            if (net && net.family === 'IPv4' && !net.internal) {
+              return net.address;
+            }
+          }
+        }
       }
     }
+  } catch (err) {
+    // fallback to localhost on error
   }
   return 'localhost';
 }
@@ -440,13 +440,23 @@ async function sendLineNotification(messageText) {
 // 1. System Info & QR Code
 app.get('/api/system/info', async (req, res) => {
   try {
-    const localIp = getLocalIp();
+    let localIp = 'localhost';
+    try {
+      localIp = getLocalIp();
+    } catch (_) {
+      localIp = 'localhost';
+    }
     const networkUrl = `http://${localIp}:${PORT}`;
-    const qrDataUrl = await QRCode.toDataURL(networkUrl, {
-      margin: 2,
-      width: 260,
-      color: { dark: '#111827', light: '#ffffff' }
-    });
+    let qrDataUrl = '';
+    try {
+      qrDataUrl = await QRCode.toDataURL(networkUrl, {
+        margin: 2,
+        width: 260,
+        color: { dark: '#111827', light: '#ffffff' }
+      });
+    } catch (_) {
+      qrDataUrl = '';
+    }
 
     const orgName = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get()?.value || 'ระบบจองห้องประชุมภายในองค์กร';
 
@@ -458,7 +468,13 @@ app.get('/api/system/info', async (req, res) => {
       orgName
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(200).json({
+      localIp: 'localhost',
+      port: PORT,
+      networkUrl: `http://localhost:${PORT}`,
+      qrDataUrl: '',
+      orgName: 'ระบบจองห้องประชุมภายในองค์กร'
+    });
   }
 });
 
@@ -471,7 +487,7 @@ app.post('/api/admin/verify', (req, res) => {
   const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
   const rateLimitStatus = checkAdminRateLimit(clientIp);
   if (!rateLimitStatus.allowed) {
-    res.setHeader('Retry-After', rateLimitStatus.retryAfter);
+    res.setHeader('Retry-After', String(rateLimitStatus.retryAfter));
     return res.status(429).json({
       success: false,
       message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${rateLimitStatus.retryAfter} วินาที`,
@@ -480,9 +496,22 @@ app.post('/api/admin/verify', (req, res) => {
   }
 
   const pin = extractAdminPin(req);
-  if (checkAdminPin(pin, clientIp)) {
+  if (checkAdminPin(pin)) {
+    resetAdminAuthRateLimit(clientIp);
     return res.json({ success: true });
   }
+
+  const failureRecord = recordAdminAuthFailure(clientIp);
+  if (failureRecord.lockUntil && failureRecord.lockUntil > Date.now()) {
+    const retryAfter = Math.max(1, Math.ceil((failureRecord.lockUntil - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      success: false,
+      message: `ลองรหัสผ่านผิดเกินกำหนด กรุณารอ ${retryAfter} วินาที`,
+      retryAfter: retryAfter
+    });
+  }
+
   return res.status(401).json({ success: false, message: 'รหัส Admin PIN ไม่ถูกต้อง' });
 });
 
@@ -855,7 +884,7 @@ app.get('/api/bookings', (req, res) => {
 // Create Booking
 app.post('/api/bookings', (req, res) => {
   try {
-    const { room, room_id, title, emp_code, start_at, end_at, note, pin } = req.body;
+    const { room, room_id, title, emp_code, start_at, end_at, note } = req.body;
 
     if (!emp_code || typeof emp_code !== 'string' || !emp_code.trim()) {
       return res.status(400).json({ message: 'กรุณาระบุรหัสพนักงาน (emp_code)' });
@@ -894,7 +923,8 @@ app.post('/api/bookings', (req, res) => {
 
     const meetingTitle = title && typeof title === 'string' && title.trim() ? title.trim() : 'การประชุมทั่วไป';
 
-    const bookingPin = (pin && typeof pin === 'string' && /^\d{4}$/.test(pin.trim())) ? pin.trim() : generateSecurePin();
+    // Force server-generated random 4-digit PIN (ignore any client-provided PIN)
+    const bookingPin = generateSecurePin();
     const hashedPin = hashPin(bookingPin);
 
     // Atomic conflict check & insertion using transaction
@@ -1285,6 +1315,9 @@ module.exports = {
   parseAndValidateIsoDate,
   validateBookingTimes,
   findConflict,
-  resetAdminAuthRateLimit
+  resetAdminAuthRateLimit,
+  checkAdminRateLimit,
+  recordAdminAuthFailure,
+  getLocalIp
 };
 

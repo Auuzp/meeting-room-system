@@ -613,8 +613,7 @@ async function handleBookingSubmit(e) {
     department,
     start_at: `${date}T${startTime}:00`,
     end_at: `${date}T${endTime}:00`,
-    note,
-    ...(pin ? { pin } : {})
+    note
   };
 
   const btn = document.getElementById('modalSubmitBtn');

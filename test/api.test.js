@@ -260,6 +260,22 @@ async function runTests() {
     assert(autoPinDbRow.pin.startsWith('$scrypt$'), 'PIN is stored as scrypt hash in database, not plaintext');
     assert(!autoPinDbRow.pin.includes(returnedPin), 'Plaintext PIN is not present in stored hash string');
 
+    // Test that client-supplied booking PIN is ignored and server generates random PIN
+    const ignoreClientPinBooking = await request('POST', '/api/bookings', {
+      room_id: roomA.id,
+      emp_code: 'EMP101',
+      title: 'พยายามระบุ PIN เองเป็น 1234',
+      start_at: '2026-11-10T12:00:00',
+      end_at: '2026-11-10T13:00:00',
+      pin: '1234'
+    });
+    assert(ignoreClientPinBooking.status === 201, 'Booking with client PIN payload created successfully (201)');
+    assert(ignoreClientPinBooking.body.pin !== '1234', 'Server ignores client-sent PIN 1234 and generates random PIN', ignoreClientPinBooking.body.pin);
+    assert(/^\d{4}$/.test(ignoreClientPinBooking.body.pin), 'Server-generated PIN is a 4-digit number', ignoreClientPinBooking.body.pin);
+    const ignorePinDbRow = db.prepare("SELECT pin FROM bookings WHERE id = ?").get(ignoreClientPinBooking.body.id);
+    assert(ignorePinDbRow.pin.startsWith('$scrypt$'), 'Stored PIN has scrypt prefix');
+    assert(!ignorePinDbRow.pin.includes('1234'), 'Stored PIN hash does not contain client PIN 1234');
+
     // Reject PIN in query string for cancel
     const cancelQueryRes = await request('DELETE', `/api/bookings/${autoPinBooking.body.id}?pin=${returnedPin}`);
     assert(cancelQueryRes.status === 400, 'Rejects PIN in query string for cancellation (400)');
@@ -396,20 +412,51 @@ async function runTests() {
     const deleteRoomRes = await request('DELETE', `/api/rooms/${newRoomId}`, null, { 'x-admin-pin': adminPin });
     assert(deleteRoomRes.status === 200, 'Admin can delete room via header auth (200)');
 
-    // Admin Rate Limiting on failed PIN attempts
-    console.log('  Testing admin rate limiting on consecutive failed auth...');
-    let rateLimited = false;
-    let retryAfterHeader = null;
-    for (let i = 0; i < 7; i++) {
-      const failAttempt = await request('POST', '/api/admin/verify', { pin: 'WRONG_PIN_' + i });
-      if (failAttempt.status === 429) {
-        rateLimited = true;
-        retryAfterHeader = failAttempt.headers['retry-after'];
-        break;
-      }
-    }
-    assert(rateLimited, 'Triggers HTTP 429 Too Many Requests after repeated failed PIN attempts');
-    assert(!!retryAfterHeader && Number(retryAfterHeader) > 0, 'Includes valid Retry-After header on 429', retryAfterHeader);
+    // Admin Rate Limiting on failed PIN attempts (Strict: 5th attempt locks immediately)
+    console.log('  Testing exact 5-attempt admin rate limiting sequence [401, 401, 401, 401, 429]...');
+    resetAdminAuthRateLimit('127.0.0.1');
+    resetAdminAuthRateLimit('::ffff:127.0.0.1');
+    resetAdminAuthRateLimit('::1');
+
+    const a1 = await request('POST', '/api/admin/verify', { pin: 'FAIL_1' });
+    assert(a1.status === 401, '1st failed attempt returns 401');
+
+    const a2 = await request('POST', '/api/admin/verify', { pin: 'FAIL_2' });
+    assert(a2.status === 401, '2nd failed attempt returns 401');
+
+    const a3 = await request('POST', '/api/admin/verify', { pin: 'FAIL_3' });
+    assert(a3.status === 401, '3rd failed attempt returns 401');
+
+    const a4 = await request('POST', '/api/admin/verify', { pin: 'FAIL_4' });
+    assert(a4.status === 401, '4th failed attempt returns 401');
+
+    const a5 = await request('POST', '/api/admin/verify', { pin: 'FAIL_5' });
+    assert(a5.status === 429, '5th failed attempt IMMEDIATELY returns 429 Too Many Requests');
+    assert(a5.headers['retry-after'] === '60', '5th failed attempt includes Retry-After: 60 header', a5.headers['retry-after']);
+
+    const a6 = await request('POST', '/api/admin/verify', { pin: 'FAIL_6' });
+    assert(a6.status === 429, 'Subsequent attempt during lockout returns 429');
+
+    // Test counter reset when successful login occurs before lockout
+    console.log('  Testing rate limit counter reset on successful auth before lock...');
+    resetAdminAuthRateLimit('127.0.0.1');
+    resetAdminAuthRateLimit('::ffff:127.0.0.1');
+    resetAdminAuthRateLimit('::1');
+
+    const preA1 = await request('POST', '/api/admin/verify', { pin: 'FAIL_PRE_1' });
+    assert(preA1.status === 401, 'Pre-reset failed attempt returns 401');
+
+    const preValid = await request('POST', '/api/admin/verify', { pin: adminPin });
+    assert(preValid.status === 200, 'Successful admin verification returns 200 and resets fail counter');
+
+    // After reset, client should get 4 more 401s before receiving 429 on the 5th attempt
+    const postA1 = await request('POST', '/api/admin/verify', { pin: 'FAIL_POST_1' });
+    assert(postA1.status === 401, '1st attempt after reset returns 401');
+    await request('POST', '/api/admin/verify', { pin: 'FAIL_POST_2' });
+    await request('POST', '/api/admin/verify', { pin: 'FAIL_POST_3' });
+    await request('POST', '/api/admin/verify', { pin: 'FAIL_POST_4' });
+    const postA5 = await request('POST', '/api/admin/verify', { pin: 'FAIL_POST_5' });
+    assert(postA5.status === 429, '5th attempt after reset returns 429');
 
     // Reset rate limiter for test runner IP so subsequent admin tests proceed
     resetAdminAuthRateLimit('127.0.0.1');
@@ -455,6 +502,13 @@ async function runTests() {
       minutes: 15
     }, { 'x-kiosk-secret': 'wrong_secret' });
     assert(kioskWrongAuth.status === 401, 'Denies Kiosk quick-book with incorrect secret (401)');
+
+    // Rejects Authorization: Bearer <secret> (Header X-Kiosk-Secret ONLY)
+    const kioskBearerAuth = await request('POST', '/api/kiosk/quick-book', {
+      room_id: roomA.id,
+      minutes: 15
+    }, { 'Authorization': `Bearer ${kioskSecret}` });
+    assert(kioskBearerAuth.status === 401, 'Rejects Kiosk Authorization: Bearer <secret> without X-Kiosk-Secret (401)');
 
     // Secret via query string rejected
     const kioskQueryAuth = await request('POST', `/api/kiosk/quick-book?kiosk_secret=${kioskSecret}`, {
@@ -506,6 +560,19 @@ async function runTests() {
     assert(!JSON.stringify(sysInfo.body).includes('admin_super_secret_pin'), 'System info does not leak admin secrets');
     assert(!JSON.stringify(sysInfo.body).includes('kiosk_super_secret_token'), 'System info does not leak kiosk secrets');
 
+    // Mock test: os.networkInterfaces throws system error
+    const originalNetworkInterfaces = os.networkInterfaces;
+    try {
+      os.networkInterfaces = () => {
+        throw new Error('EHOSTUNREACH: simulated network interface failure');
+      };
+      const sysInfoMock = await request('GET', '/api/system/info');
+      assert(sysInfoMock.status === 200, 'GET /api/system/info returns 200 OK even when os.networkInterfaces() throws');
+      assert(sysInfoMock.body.localIp === 'localhost', 'Falls back to localhost when network interface query throws', sysInfoMock.body.localIp);
+    } finally {
+      os.networkInterfaces = originalNetworkInterfaces;
+    }
+
     // -----------------------------------------------------------------
     // 10. Verification of Production Database Pristineness
     // -----------------------------------------------------------------
@@ -519,13 +586,16 @@ async function runTests() {
     console.log(`🏁 Total Tests: ${passed + failed} | Passed: ${passed} | Failed: ${failed}`);
     console.log('================================================================\n');
 
-    process.exit(failed > 0 ? 1 : 0);
+    process.exitCode = failed > 0 ? 1 : 0;
   } catch (err) {
     console.error('Fatal test error:', err);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     if (server) {
       server.close();
+    }
+    if (db) {
+      try { db.close(); } catch (_) {}
     }
     // Cleanup temporary test database files
     try {
@@ -533,6 +603,9 @@ async function runTests() {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
     } catch (_) {}
+    if (!fs.existsSync(tempDir)) {
+      console.log('  🧹 [CLEANUP] Temporary test directory cleaned up successfully\n');
+    }
   }
 }
 
