@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "meeting-room-system",
   "version": "1.0.0",
   "description": "ระบบจองห้องประชุมภายในองค์กร ใช้งานได้ทุกอุปกรณ์ ทำงานบน Local Server",
@@ -16,6 +16,9 @@
   ],
   "author": "Organization Team",
   "license": "ISC",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
