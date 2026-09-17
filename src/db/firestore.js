@@ -1,4 +1,7 @@
-const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
+const { initializeApp, getApps, getApp, cert, applicationDefault } = require('firebase-admin/app');
+const { getFirestore: getFirestoreInstance } = require('firebase-admin/firestore');
 
 let firestoreInstance = null;
 let appInstance = null;
@@ -8,68 +11,78 @@ function initFirestore(config = {}) {
     return firestoreInstance;
   }
 
-  // If emulator host is set, or if an instance is already active
-  if (admin.apps.length > 0 && !config.forceNew) {
-    appInstance = admin.app();
-    firestoreInstance = admin.firestore();
+  const existingApps = getApps();
+  if (existingApps.length > 0 && !config.forceNew) {
+    appInstance = getApp();
+    firestoreInstance = getFirestoreInstance(appInstance);
     return firestoreInstance;
   }
 
-  const projectId = config.projectId || process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = config.clientEmail || process.env.FIREBASE_CLIENT_EMAIL;
-  let privateKey = config.privateKey || process.env.FIREBASE_PRIVATE_KEY;
+  // Parse service account key if provided via JSON or file path
+  let serviceAccountData = null;
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+    try {
+      serviceAccountData = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+    } catch (_) {
+      const resolvedPath = path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      if (fs.existsSync(resolvedPath)) {
+        try {
+          serviceAccountData = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+        } catch (_) {}
+      }
+    }
+  }
+
+  const projectId = config.projectId ||
+                    process.env.FIREBASE_PROJECT_ID ||
+                    (serviceAccountData ? serviceAccountData.project_id : null) ||
+                    process.env.GCLOUD_PROJECT;
+  const clientEmail = config.clientEmail ||
+                      process.env.FIREBASE_CLIENT_EMAIL ||
+                      (serviceAccountData ? serviceAccountData.client_email : null);
+  let privateKey = config.privateKey ||
+                   process.env.FIREBASE_PRIVATE_KEY ||
+                   (serviceAccountData ? serviceAccountData.private_key : null);
 
   if (privateKey) {
-    // Handle escaped newlines properly when stored in environment variables
     privateKey = privateKey.replace(/\\n/g, '\n');
   }
 
   let credential;
-
-  // 1. Service account direct env vars
-  if (projectId && clientEmail && privateKey) {
-    credential = admin.credential.cert({
+  if (serviceAccountData) {
+    credential = cert(serviceAccountData);
+  } else if (projectId && clientEmail && privateKey) {
+    credential = cert({
       projectId,
       clientEmail,
       privateKey
     });
-  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-    // 2. Service account JSON string
-    try {
-      const parsed = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-      credential = admin.credential.cert(parsed);
-    } catch (_) {
-      // or file path
-      credential = admin.credential.cert(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-    }
   } else if (process.env.FIRESTORE_EMULATOR_HOST) {
-    // 3. Emulator mode (no credentials needed)
-    credential = admin.credential.applicationDefault();
+    credential = applicationDefault();
   } else {
-    // 4. Fallback to Google Application Default Credentials
     try {
-      credential = admin.credential.applicationDefault();
+      credential = applicationDefault();
     } catch (e) {
-      // Credentials not provided
       credential = null;
     }
   }
 
-  const appOptions = {
-    projectId: projectId || process.env.GCLOUD_PROJECT || 'meeting-room-system'
-  };
-
+  const appOptions = {};
+  if (projectId) {
+    appOptions.projectId = projectId;
+  }
   if (credential) {
     appOptions.credential = credential;
   }
 
-  appInstance = admin.initializeApp(appOptions, config.appName || (config.forceNew ? `app-${Date.now()}` : undefined));
-  firestoreInstance = admin.firestore(appInstance);
+  appInstance = initializeApp(appOptions, config.appName || (config.forceNew ? `app-${Date.now()}` : undefined));
+  firestoreInstance = getFirestoreInstance(appInstance);
 
-  // Settings
-  firestoreInstance.settings({
-    ignoreUndefinedProperties: true
-  });
+  try {
+    firestoreInstance.settings({
+      ignoreUndefinedProperties: true
+    });
+  } catch (e) {}
 
   return firestoreInstance;
 }

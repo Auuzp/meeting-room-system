@@ -43,11 +43,16 @@ async function migrate() {
   // 3. Connect to SQLite (read-only mode)
   const sqlite = new DatabaseSync(dbPath, { readOnly: true });
 
+  // Helper to check table existence
+  const hasTable = (name) => {
+    return !!sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name);
+  };
+
   // Read tables
-  const settingsRows = sqlite.prepare("SELECT key, value FROM settings").all();
-  const roomsRows = sqlite.prepare("SELECT * FROM rooms").all();
-  const employeesRows = sqlite.prepare("SELECT * FROM employees").all();
-  const bookingsRows = sqlite.prepare("SELECT * FROM bookings").all();
+  const settingsRows = hasTable('settings') ? sqlite.prepare("SELECT key, value FROM settings").all() : [];
+  const roomsRows = hasTable('rooms') ? sqlite.prepare("SELECT * FROM rooms").all() : [];
+  const employeesRows = hasTable('employees') ? sqlite.prepare("SELECT * FROM employees").all() : [];
+  const bookingsRows = hasTable('bookings') ? sqlite.prepare("SELECT * FROM bookings").all() : [];
 
   console.log('\n--- SQLite Source Record Counts ---');
   console.log(`settings: ${settingsRows.length}`);
