@@ -1,0 +1,13 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // SECURITY MODEL:
+    // Direct client/browser access to Firestore is completely denied.
+    // All operations (booking creation, PIN verification, admin management, kiosk)
+    // are strictly performed on the Node.js Express server using Firebase Admin SDK.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

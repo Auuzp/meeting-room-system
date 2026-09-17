@@ -16,3 +16,11 @@ data/public_url.txt
 .DS_Store
 Thumbs.db
 
+# Sensitive credentials & environment files
+.env
+*.env
+*.env.*
+*serviceAccount*.json
+*service-account*.json
+*credentials*.json
+*.backup*

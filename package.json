@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/api.test.js"
+    "test": "node test/api.test.js",
+    "test:firestore": "node test/firestore.test.js",
+    "migrate:firebase": "node scripts/migrate-to-firestore.js"
   },
   "keywords": [
     "meeting-room",
@@ -22,6 +24,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "firebase-admin": "^14.4.0",
     "qrcode": "^1.5.4"
   }
 }

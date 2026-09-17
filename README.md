@@ -58,3 +58,31 @@ node server.js
 ## 🔑 รหัสผ่านสำหรับผู้ดูแลระบบ
 - **Master Admin PIN**: กำหนดผ่านตัวแปรสภาพแวดล้อม `ADMIN_PIN` หรือตั้งค่าในระบบ
 - ใช้สำหรับ: ปลดล็อกหน้า **⚙️ จัดการ (Admin Console)**, เพิ่ม/ลบห้องประชุม, และยกเลิกรายการจองของพนักงานในกรณีฉุกเฉิน
+
+---
+
+## ☁️ สถาปัตยกรรมฐานข้อมูล (Database Architecture & Firebase Firestore)
+
+ระบบรองรับระบบจัดเก็บข้อมูล 2 รูปแบบผ่านตัวแปร `DB_PROVIDER`:
+1. **SQLite (ค่าเริ่มต้นสำหรับ Local/LAN)**: `DB_PROVIDER=sqlite` จัดเก็บลงไฟล์ `data/meeting_rooms.db`
+2. **Cloud Firestore (สำหรับ Public Production บน Render)**: `DB_PROVIDER=firestore` เชื่อมต่อผ่าน Firebase Admin SDK บน Node.js backend
+
+### การตั้งค่าตัวแปรสภาพแวดล้อมสำหรับ Firestore:
+- `DB_PROVIDER`: `firestore` (หากไม่ระบุจะใช้ `sqlite`)
+- `FIREBASE_PROJECT_ID`: Project ID ของเจ้าของโครงการ
+- `FIREBASE_CLIENT_EMAIL`: Service account email
+- `FIREBASE_PRIVATE_KEY`: Private key จาก Service Account (รองรับ `\n` line breaks)
+- `KIOSK_SECRET`: รหัสลับสำหรับหน้าจอ Kiosk จองด่วน
+
+### คำสั่งการย้ายข้อมูล (Data Migration):
+```bash
+# ทดสอบจำลองการย้ายข้อมูล (ไม่เขียนข้อมูลจริง)
+npm run migrate:firebase -- --dry-run
+
+# ย้ายข้อมูลจริงจาก SQLite สู่ Cloud Firestore
+npm run migrate:firebase
+```
+
+### การสำรองข้อมูลและการ Rollback:
+- เครื่องมือ Migration จะสร้างไฟล์สำรอง `data/meeting_rooms.db.backup.<timestamp>` พร้อมคำนวณ SHA-256 ให้โดยอัตโนมัติก่อนเริ่มย้ายข้อมูล
+- หากต้องการ Rollback กลับไปใช้ SQLite ให้ตั้งค่า `DB_PROVIDER=sqlite` ในสภาพแวดล้อม
