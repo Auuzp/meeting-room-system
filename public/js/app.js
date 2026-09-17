@@ -295,8 +295,8 @@ function openQrModal() {
   qrModal.classList.add('active'); 
   loadSystemInfo();
 }
-function closeQrModal() { qrModal.classList.remove('active'); }
-document.getElementById('qrBtn').addEventListener('click', openQrModal);
+const qrBtn = document.getElementById('qrBtn');
+if (qrBtn) qrBtn.addEventListener('click', openQrModal);
 
 // ----------------------------------------------------
 // Rooms & KPI Dashboard
