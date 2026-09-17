@@ -1,7 +1,9 @@
 // Load environment variables from .env if present (supported natively in Node.js 20.6.0+)
 if (typeof process.loadEnvFile === 'function') {
   try {
-    process.loadEnvFile();
+    if (!process.env.DB_PATH || !process.env.DB_PATH.includes('test_meeting_rooms')) {
+      process.loadEnvFile();
+    }
   } catch (err) {
     // .env is optional
   }
@@ -14,17 +16,21 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
-const { DatabaseSync } = require('node:sqlite');
+
+const { initDatabase, getDatabase } = require('./src/db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'meeting_rooms.db');
 
-// Ensure database directory exists
-const dbDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
+// Initialize Database (Dual provider: SQLite or Cloud Firestore)
+const { provider: dbProvider, db, repositories } = initDatabase(process.env.DB_PROVIDER, { dbPath: DB_PATH });
+const {
+  rooms: roomsRepo,
+  employees: employeesRepo,
+  bookings: bookingsRepo,
+  settings: settingsRepo
+} = repositories;
 
 app.use(cors());
 app.use(express.json());
@@ -38,68 +44,6 @@ app.use('/api', (req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Initialize SQLite Database
-const db = new DatabaseSync(DB_PATH);
-
-// Setup Tables & Migrations
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS employees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    emp_code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    department TEXT NOT NULL,
-    position TEXT,
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS rooms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT UNIQUE,
-    name TEXT NOT NULL,
-    capacity INTEGER DEFAULT 10,
-    location TEXT,
-    color TEXT DEFAULT '#ff6a00',
-    amenities TEXT DEFAULT '[]',
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS bookings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id INTEGER NOT NULL,
-    emp_code TEXT,
-    title TEXT NOT NULL,
-    booked_by TEXT NOT NULL,
-    department TEXT,
-    start_at TEXT NOT NULL,
-    end_at TEXT NOT NULL,
-    note TEXT,
-    pin TEXT,
-    status TEXT DEFAULT 'confirmed',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_bookings_time ON bookings(room_id, start_at, end_at, status);
-  CREATE INDEX IF NOT EXISTS idx_emp_code ON employees(emp_code);
-`);
-
-// Migration: Ensure is_active column exists in employees table
-try {
-  db.exec(`ALTER TABLE employees ADD COLUMN is_active INTEGER DEFAULT 1;`);
-} catch (e) {
-  // Column already exists, ignore
-}
 
 // ----------------------------------------------------
 // Security & PIN Hashing Helpers
@@ -138,19 +82,19 @@ function generateSecurePin() {
 }
 
 // Rate Limiter for Admin PIN (Failed attempt tracking per IP)
-const adminRateLimitMap = new Map(); // ip -> { failCount, lockUntil, resetTime }
+const adminRateLimitMap = new Map();
 
 function checkAdminRateLimit(ip) {
   const now = Date.now();
   const record = adminRateLimitMap.get(ip);
   if (!record) return { allowed: true };
 
-  if (record.lockUntil && now < record.lockUntil) {
-    const retryAfterSeconds = Math.max(1, Math.ceil((record.lockUntil - now) / 1000));
-    return { allowed: false, retryAfter: retryAfterSeconds };
+  if (record.lockUntil && record.lockUntil > now) {
+    const retryAfter = Math.max(1, Math.ceil((record.lockUntil - now) / 1000));
+    return { allowed: false, retryAfter };
   }
 
-  if (now > record.resetTime) {
+  if (record.lockUntil && record.lockUntil <= now) {
     adminRateLimitMap.delete(ip);
     return { allowed: true };
   }
@@ -158,15 +102,20 @@ function checkAdminRateLimit(ip) {
   return { allowed: true };
 }
 
-function recordAdminAuthFailure(ip, maxFailures = 5, lockDurationMs = 60000) {
+function recordAdminAuthFailure(ip) {
   const now = Date.now();
+  const windowMs = 60 * 1000;
+  const maxAttempts = 5;
+  const lockDurationMs = 60 * 1000;
+
   let record = adminRateLimitMap.get(ip);
-  if (!record || now > record.resetTime) {
-    record = { failCount: 1, lockUntil: 0, resetTime: now + lockDurationMs };
+  if (!record || (now - record.firstAttemptAt > windowMs && !record.lockUntil)) {
+    record = { count: 1, firstAttemptAt: now, lockUntil: null };
   } else {
-    record.failCount++;
+    record.count += 1;
   }
-  if (record.failCount >= maxFailures) {
+
+  if (record.count >= maxAttempts) {
     record.lockUntil = now + lockDurationMs;
   }
   adminRateLimitMap.set(ip, record);
@@ -177,26 +126,27 @@ function resetAdminAuthRateLimit(ip) {
   adminRateLimitMap.delete(ip);
 }
 
-// Initialize Settings & Migration (Strictly NO fallback default PIN)
-if (process.env.ADMIN_PIN && process.env.ADMIN_PIN.trim()) {
-  const hashed = hashPin(process.env.ADMIN_PIN.trim());
-  db.prepare(`
-    INSERT INTO settings (key, value) VALUES ('admin_pin', ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run(hashed);
-} else {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get();
-  if (row && !row.value.startsWith('$scrypt$')) {
-    // Migrate existing plaintext to scrypt hash safely
-    db.prepare("UPDATE settings SET value = ? WHERE key = 'admin_pin'").run(hashPin(row.value));
-  }
-}
+// Initialize Settings & Migration
+(async () => {
+  try {
+    if (process.env.ADMIN_PIN && process.env.ADMIN_PIN.trim()) {
+      const hashed = hashPin(process.env.ADMIN_PIN.trim());
+      await settingsRepo.set('admin_pin', hashed);
+    } else {
+      const row = await settingsRepo.get('admin_pin');
+      if (row && row.value && !row.value.startsWith('$scrypt$')) {
+        await settingsRepo.set('admin_pin', hashPin(row.value));
+      }
+    }
 
-// Ensure org_name exists
-const orgNameRow = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get();
-if (!orgNameRow) {
-  db.prepare("INSERT INTO settings (key, value) VALUES ('org_name', 'ระบบจองห้องประชุมภายในองค์กร')").run();
-}
+    const orgNameRow = await settingsRepo.get('org_name');
+    if (!orgNameRow) {
+      await settingsRepo.set('org_name', 'ระบบจองห้องประชุมภายในองค์กร');
+    }
+  } catch (err) {
+    console.error('Settings initialization warning:', err.message);
+  }
+})();
 
 // Helper: Extract Admin PIN safely (Reject if in query string)
 function extractAdminPin(req) {
@@ -216,15 +166,15 @@ function extractAdminPin(req) {
 }
 
 // Helper: Check Admin PIN
-function checkAdminPin(pin) {
+async function checkAdminPin(pin) {
   if (!pin) return false;
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'admin_pin'").get();
+  const row = await settingsRepo.get('admin_pin');
   if (!row || !row.value) return false;
   return verifyPinHash(pin, row.value);
 }
 
 // Middleware: Require Admin Authentication
-function requireAdminAuth(req, res, next) {
+async function requireAdminAuth(req, res, next) {
   if (req.query && (req.query.admin_pin || req.query.pin)) {
     return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง Admin PIN ผ่าน query string' });
   }
@@ -240,7 +190,7 @@ function requireAdminAuth(req, res, next) {
   }
 
   const pin = extractAdminPin(req);
-  if (checkAdminPin(pin)) {
+  if (await checkAdminPin(pin)) {
     resetAdminAuthRateLimit(clientIp);
     return next();
   }
@@ -298,31 +248,8 @@ function getLocalIp() {
         }
       }
     }
-  } catch (err) {
-    // fallback to localhost on error
-  }
+  } catch (err) {}
   return 'localhost';
-}
-
-// Helper: Check Overlap Conflict
-function findConflict(roomId, startAt, endAt, excludeBookingId = null) {
-  let query = `
-    SELECT b.*, r.name as room_name 
-    FROM bookings b
-    JOIN rooms r ON b.room_id = r.id
-    WHERE b.room_id = ?
-      AND b.status = 'confirmed'
-      AND (? < b.end_at AND ? > b.start_at)
-  `;
-  const params = [roomId, startAt, endAt];
-
-  if (excludeBookingId) {
-    query += " AND b.id != ?";
-    params.push(excludeBookingId);
-  }
-
-  query += " LIMIT 1";
-  return db.prepare(query).get(...params);
 }
 
 // Strict ISO Date parsing & validation (prevent auto-normalization of invalid calendar dates like Feb 31)
@@ -389,11 +316,11 @@ function setLineNotificationTransport(transport) {
   lineNotificationTransport = transport;
 }
 
-function getLineSettings() {
-  const enabled = db.prepare("SELECT value FROM settings WHERE key = 'line_enabled'").get()?.value === '1';
-  const type = db.prepare("SELECT value FROM settings WHERE key = 'line_type'").get()?.value || 'messaging_api';
-  const token = db.prepare("SELECT value FROM settings WHERE key = 'line_token'").get()?.value || '';
-  const destinationId = db.prepare("SELECT value FROM settings WHERE key = 'line_dest_id'").get()?.value || '';
+async function getLineSettings() {
+  const enabled = (await settingsRepo.get('line_enabled'))?.value === '1';
+  const type = (await settingsRepo.get('line_type'))?.value || 'messaging_api';
+  const token = (await settingsRepo.get('line_token'))?.value || '';
+  const destinationId = (await settingsRepo.get('line_dest_id'))?.value || '';
   return { enabled, type, token, destinationId };
 }
 
@@ -410,7 +337,7 @@ function formatBookingThaiDate(iso) {
 
 async function sendLineNotification(messageText) {
   try {
-    const { enabled, type, token, destinationId } = getLineSettings();
+    const { enabled, type, token, destinationId } = await getLineSettings();
     if (!enabled || !token) {
       return { success: false, reason: 'ไม่ได้เปิดใช้งาน LINE หรือยังไม่ได้ระบุ Token' };
     }
@@ -451,6 +378,11 @@ async function sendLineNotification(messageText) {
   }
 }
 
+// Helper: Check Overlap Conflict (exported for testing/backwards-compat)
+function findConflict(roomId, startAt, endAt, excludeBookingId = null) {
+  return bookingsRepo.findConflict(roomId, startAt, endAt, excludeBookingId);
+}
+
 // ----------------------------------------------------
 // REST API Endpoints
 // ----------------------------------------------------
@@ -476,7 +408,8 @@ app.get('/api/system/info', async (req, res) => {
       qrDataUrl = '';
     }
 
-    const orgName = db.prepare("SELECT value FROM settings WHERE key = 'org_name'").get()?.value || 'ระบบจองห้องประชุมภายในองค์กร';
+    const orgRow = await settingsRepo.get('org_name');
+    const orgName = orgRow?.value || 'ระบบจองห้องประชุมภายในองค์กร';
 
     res.json({
       localIp,
@@ -497,7 +430,7 @@ app.get('/api/system/info', async (req, res) => {
 });
 
 // 2. Admin PIN Verification
-app.post('/api/admin/verify', (req, res) => {
+app.post('/api/admin/verify', async (req, res) => {
   if (req.query && (req.query.admin_pin || req.query.pin)) {
     return res.status(400).json({ success: false, message: 'ไม่อนุญาตให้ส่ง Admin PIN ผ่าน query string' });
   }
@@ -514,7 +447,7 @@ app.post('/api/admin/verify', (req, res) => {
   }
 
   const pin = extractAdminPin(req);
-  if (checkAdminPin(pin)) {
+  if (await checkAdminPin(pin)) {
     resetAdminAuthRateLimit(clientIp);
     return res.json({ success: true });
   }
@@ -538,9 +471,9 @@ app.post('/api/admin/verify', (req, res) => {
 // ----------------------------------------------------
 
 // ดึงรายชื่อพนักงานทั้งหมด (สำหรับ Admin)
-app.get('/api/admin/employees', requireAdminAuth, (req, res) => {
+app.get('/api/admin/employees', requireAdminAuth, async (req, res) => {
   try {
-    const employees = db.prepare("SELECT * FROM employees ORDER BY id DESC").all();
+    const employees = await employeesRepo.getAll();
     res.json(employees);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -548,7 +481,7 @@ app.get('/api/admin/employees', requireAdminAuth, (req, res) => {
 });
 
 // Admin เพิ่มพนักงานใหม่ที่มีสิทธิ์ใช้
-app.post('/api/admin/employees', requireAdminAuth, (req, res) => {
+app.post('/api/admin/employees', requireAdminAuth, async (req, res) => {
   try {
     const { emp_code, name, department, position } = req.body;
 
@@ -560,40 +493,37 @@ app.post('/api/admin/employees', requireAdminAuth, (req, res) => {
     }
 
     const code = emp_code.trim().toUpperCase();
-
-    // Check duplicate emp_code
-    const existing = db.prepare("SELECT id FROM employees WHERE UPPER(emp_code) = ?").get(code);
+    const existing = await employeesRepo.getByCode(code);
     if (existing) {
       return res.status(409).json({ message: `รหัสพนักงาน "${code}" มีอยู่ในระบบแล้ว` });
     }
 
-    const stmt = db.prepare(`
-      INSERT INTO employees (emp_code, name, department, position, is_active)
-      VALUES (?, ?, ?, ?, 1)
-    `);
-    const result = stmt.run(code, name.trim(), (department || '').trim(), (position || '').trim());
+    const result = await employeesRepo.create({
+      emp_code: code,
+      name: name.trim(),
+      department: (department || '').trim(),
+      position: (position || '').trim()
+    });
 
-    res.status(201).json({ success: true, id: result.lastInsertRowid, message: 'เพิ่มพนักงานที่มีสิทธิ์ใช้งานเรียบร้อยแล้ว' });
+    res.status(201).json({ success: true, id: result.id, message: 'เพิ่มพนักงานที่มีสิทธิ์ใช้งานเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Admin แก้ไขข้อมูลพนักงาน หรือเปิด/ปิดสิทธิ์การใช้งาน (is_active: 0 หรือ 1)
-app.put('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
+app.put('/api/admin/employees/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { emp_code, name, department, position, is_active } = req.body;
 
-    const targetEmp = db.prepare("SELECT * FROM employees WHERE id = ?").get(id);
+    const targetEmp = await employeesRepo.getById(id);
     if (!targetEmp) {
       return res.status(404).json({ message: 'ไม่พบข้อมูลพนักงานนี้' });
     }
 
     const newCode = (emp_code ? emp_code.trim().toUpperCase() : targetEmp.emp_code);
-    
-    // ตรวจสอบรหัสพนักงานซ้ำกับคนอื่น
-    const dup = db.prepare("SELECT id FROM employees WHERE UPPER(emp_code) = ? AND id != ?").get(newCode, id);
+    const dup = await employeesRepo.getByCode(newCode, id);
     if (dup) {
       return res.status(409).json({ message: `รหัสพนักงาน "${newCode}" ซ้ำกับพนักงานท่านอื่นในระบบ` });
     }
@@ -603,11 +533,13 @@ app.put('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
     const newPos = (position !== undefined ? position.trim() : targetEmp.position);
     const newActive = (is_active !== undefined ? Number(is_active) : targetEmp.is_active);
 
-    db.prepare(`
-      UPDATE employees 
-      SET emp_code = ?, name = ?, department = ?, position = ?, is_active = ?
-      WHERE id = ?
-    `).run(newCode, newName, newDept, newPos, newActive, id);
+    await employeesRepo.update(id, {
+      emp_code: newCode,
+      name: newName,
+      department: newDept,
+      position: newPos,
+      is_active: newActive
+    });
 
     res.json({ success: true, message: 'อัปเดตข้อมูลและสิทธิ์พนักงานเรียบร้อยแล้ว' });
   } catch (err) {
@@ -616,10 +548,10 @@ app.put('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
 });
 
 // Admin ลบพนักงานออกจากระบบสิทธิ์
-app.delete('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
+app.delete('/api/admin/employees/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    db.prepare("DELETE FROM employees WHERE id = ?").run(id);
+    await employeesRepo.delete(id);
     res.json({ success: true, message: 'ลบพนักงานออกจากระบบเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -629,9 +561,9 @@ app.delete('/api/admin/employees/:id', requireAdminAuth, (req, res) => {
 // ----------------------------------------------------
 // ADMIN: ตั้งค่าการแจ้งเตือนผ่าน LINE
 // ----------------------------------------------------
-app.get('/api/admin/settings/line', requireAdminAuth, (req, res) => {
+app.get('/api/admin/settings/line', requireAdminAuth, async (req, res) => {
   try {
-    const settings = getLineSettings();
+    const settings = await getLineSettings();
     const rawToken = settings.token || '';
     const maskedToken = rawToken ? (rawToken.length > 8 ? rawToken.slice(0, 4) + '***' + rawToken.slice(-4) : '***') : '';
     res.json({
@@ -646,28 +578,19 @@ app.get('/api/admin/settings/line', requireAdminAuth, (req, res) => {
   }
 });
 
-app.post('/api/admin/settings/line', requireAdminAuth, (req, res) => {
+app.post('/api/admin/settings/line', requireAdminAuth, async (req, res) => {
   try {
     const { enabled, type, token, destinationId } = req.body;
-
-    const setVal = (k, v) => {
-      db.prepare(`
-        INSERT INTO settings (key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(k, String(v ?? ''));
-    };
-
-    const existing = getLineSettings();
+    const existing = await getLineSettings();
     let finalToken = existing.token;
-    // When updating without providing a new raw token, retain existing token
     if (token && typeof token === 'string' && !token.includes('***') && token.trim()) {
       finalToken = token.trim();
     }
 
-    setVal('line_enabled', enabled ? '1' : '0');
-    setVal('line_type', type || 'messaging_api');
-    setVal('line_token', finalToken || '');
-    setVal('line_dest_id', destinationId ? destinationId.trim() : '');
+    await settingsRepo.set('line_enabled', enabled ? '1' : '0');
+    await settingsRepo.set('line_type', type || 'messaging_api');
+    await settingsRepo.set('line_token', finalToken || '');
+    await settingsRepo.set('line_dest_id', destinationId ? destinationId.trim() : '');
 
     res.json({ success: true, message: 'บันทึกการตั้งค่า LINE Notification เรียบร้อยแล้ว' });
   } catch (err) {
@@ -677,10 +600,7 @@ app.post('/api/admin/settings/line', requireAdminAuth, (req, res) => {
 
 app.post('/api/admin/line/test', requireAdminAuth, async (req, res) => {
   try {
-    const testMessage = `🧪 ทดสอบระบบแจ้งเตือน LINE จากระบบจองห้องประชุม
-✅ การเชื่อมต่อระบบสำเร็จเรียบร้อย!
-🕒 เวลาทดสอบ: ${new Date().toLocaleTimeString('th-TH')}
-พร้อมรับการแจ้งเตือนเมื่อมีการจอง, แก้ไข หรือยกเลิกห้องประชุมแล้วครับ`;
+    const testMessage = `🧪 ทดสอบระบบแจ้งเตือน LINE จากระบบจองห้องประชุม\n✅ การเชื่อมต่อระบบสำเร็จเรียบร้อย!\n🕒 เวลาทดสอบ: ${new Date().toLocaleTimeString('th-TH')}\nพร้อมรับการแจ้งเตือนเมื่อมีการจอง, แก้ไข หรือยกเลิกห้องประชุมแล้วครับ`;
 
     const result = await sendLineNotification(testMessage);
     if (result && result.success) {
@@ -699,7 +619,7 @@ app.post('/api/admin/line/test', requireAdminAuth, async (req, res) => {
 // ----------------------------------------------------
 // พนักงานเข้าสู่ระบบ (ตรวจสอบสิทธิ์การใช้งาน is_active)
 // ----------------------------------------------------
-app.post('/api/auth/employee-login', (req, res) => {
+app.post('/api/auth/employee-login', async (req, res) => {
   try {
     const { keyword } = req.body;
     if (!keyword || !keyword.trim()) {
@@ -707,12 +627,7 @@ app.post('/api/auth/employee-login', (req, res) => {
     }
 
     const clean = keyword.trim();
-    const employee = db.prepare(`
-      SELECT * FROM employees 
-      WHERE UPPER(emp_code) = UPPER(?) 
-         OR name LIKE ?
-      LIMIT 1
-    `).get(clean, `%${clean}%`);
+    const employee = await employeesRepo.findByKeyword(clean);
 
     if (!employee) {
       return res.status(404).json({
@@ -720,7 +635,6 @@ app.post('/api/auth/employee-login', (req, res) => {
       });
     }
 
-    // ตรวจสอบว่า Admin เปิดสิทธิ์ให้ใช้หรือไม่
     if (employee.is_active === 0) {
       return res.status(403).json({
         message: '⛔ บัญชีพนักงานของคุณถูกระงับสิทธิ์การจองห้องประชุมชั่วคราว กรุณาติดต่อ Admin'
@@ -747,36 +661,31 @@ app.post('/api/auth/employee-login', (req, res) => {
 // ----------------------------------------------------
 
 // Get Rooms (รวมสถานะว่าง/กำลังประชุม)
-app.get('/api/rooms', (req, res) => {
+app.get('/api/rooms', async (req, res) => {
   try {
-    const rooms = db.prepare("SELECT * FROM rooms WHERE is_active = 1 ORDER BY id ASC").all();
+    const rooms = await roomsRepo.getAll(true);
     const nowIso = getNowIso();
     const today = nowIso.slice(0, 10);
+    const allActiveBookings = await bookingsRepo.getAll({ status: 'confirmed' });
 
     const enriched = rooms.map(room => {
       let parsedAmenities = [];
-      try { parsedAmenities = JSON.parse(room.amenities || '[]'); } catch (e) {}
+      try {
+        parsedAmenities = typeof room.amenities === 'string' ? JSON.parse(room.amenities || '[]') : (room.amenities || []);
+      } catch (e) {}
 
-      const current = db.prepare(`
-        SELECT * FROM bookings
-        WHERE room_id = ? AND status = 'confirmed'
-          AND start_at <= ? AND end_at > ?
-        ORDER BY start_at ASC LIMIT 1
-      `).get(room.id, nowIso, nowIso);
-
-      const next = db.prepare(`
-        SELECT * FROM bookings
-        WHERE room_id = ? AND status = 'confirmed'
-          AND start_at > ? AND start_at LIKE ?
-        ORDER BY start_at ASC LIMIT 1
-      `).get(room.id, nowIso, `${today}%`);
+      const roomBookings = allActiveBookings.filter(b => Number(b.room_id) === Number(room.id));
+      const current = roomBookings.find(b => b.start_at <= nowIso && b.end_at > nowIso) || null;
+      const next = roomBookings
+        .filter(b => b.start_at > nowIso && b.start_at.startsWith(today))
+        .sort((a, b) => (a.start_at > b.start_at ? 1 : -1))[0] || null;
 
       return {
         ...room,
         amenities: parsedAmenities,
         is_busy: !!current,
-        current_booking: current || null,
-        next_booking: next || null
+        current_booking: current,
+        next_booking: next
       };
     });
 
@@ -787,7 +696,7 @@ app.get('/api/rooms', (req, res) => {
 });
 
 // Admin กำหนดเพิ่มห้องประชุมใหม่
-app.post('/api/rooms', requireAdminAuth, (req, res) => {
+app.post('/api/rooms', requireAdminAuth, async (req, res) => {
   try {
     const { name, code, capacity, location, color, amenities } = req.body;
 
@@ -796,22 +705,29 @@ app.post('/api/rooms', requireAdminAuth, (req, res) => {
     }
 
     const roomCode = code ? code.trim().toUpperCase() : `ROOM-${Date.now().toString().slice(-3)}`;
-    const amenJson = JSON.stringify(Array.isArray(amenities) ? amenities : []);
+    const existing = await roomsRepo.getByCode(roomCode);
+    if (existing) {
+      return res.status(409).json({ message: `รหัสห้อง "${roomCode}" มีอยู่ในระบบแล้ว กรุณาใช้รหัสอื่น` });
+    }
 
-    const stmt = db.prepare(`
-      INSERT INTO rooms (code, name, capacity, location, color, amenities)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const result = stmt.run(roomCode, name.trim(), Number(capacity) || 8, (location || '').trim(), color || '#ff6a00', amenJson);
+    const amenJson = Array.isArray(amenities) ? JSON.stringify(amenities) : (typeof amenities === 'string' ? amenities : '[]');
+    const result = await roomsRepo.create({
+      code: roomCode,
+      name: name.trim(),
+      capacity: Number(capacity) || 8,
+      location: (location || '').trim(),
+      color: color || '#ff6a00',
+      amenities: amenJson
+    });
 
-    res.status(201).json({ success: true, id: result.lastInsertRowid, message: 'เพิ่มห้องประชุมเรียบร้อยแล้ว' });
+    res.status(201).json({ success: true, id: result.id, message: 'เพิ่มห้องประชุมเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Admin แก้ไขชื่อห้องและรายละเอียดห้องประชุม
-app.put('/api/rooms/:id', requireAdminAuth, (req, res) => {
+app.put('/api/rooms/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { code, name, capacity, location, color, amenities } = req.body;
@@ -820,25 +736,26 @@ app.put('/api/rooms/:id', requireAdminAuth, (req, res) => {
       return res.status(400).json({ message: 'กรุณาระบุชื่อห้องประชุม' });
     }
 
-    const targetRoom = db.prepare("SELECT * FROM rooms WHERE id = ?").get(id);
+    const targetRoom = await roomsRepo.getById(id);
     if (!targetRoom) {
       return res.status(404).json({ message: 'ไม่พบข้อมูลห้องประชุมนี้' });
     }
 
     const cleanCode = (code ? code.trim().toUpperCase() : targetRoom.code);
-
-    // ตรวจสอบรหัสห้องซ้ำกับห้องอื่น
-    const dup = db.prepare("SELECT id FROM rooms WHERE UPPER(code) = ? AND id != ?").get(cleanCode, id);
+    const dup = await roomsRepo.getByCode(cleanCode, id);
     if (dup) {
       return res.status(409).json({ message: `รหัสห้อง "${cleanCode}" มีอยู่ในระบบแล้ว กรุณาใช้รหัสอื่น` });
     }
 
-    const amenJson = JSON.stringify(Array.isArray(amenities) ? amenities : []);
-    db.prepare(`
-      UPDATE rooms 
-      SET code = ?, name = ?, capacity = ?, location = ?, color = ?, amenities = ?
-      WHERE id = ?
-    `).run(cleanCode, name.trim(), Number(capacity) || targetRoom.capacity || 8, (location || '').trim(), color || targetRoom.color || '#ff6a00', amenJson, id);
+    const amenJson = Array.isArray(amenities) ? JSON.stringify(amenities) : (typeof amenities === 'string' ? amenities : '[]');
+    await roomsRepo.update(id, {
+      code: cleanCode,
+      name: name.trim(),
+      capacity: Number(capacity) || targetRoom.capacity || 8,
+      location: (location || '').trim(),
+      color: color || targetRoom.color || '#ff6a00',
+      amenities: amenJson
+    });
 
     res.json({ success: true, message: 'บันทึกการแก้ไขห้องประชุมเรียบร้อยแล้ว' });
   } catch (err) {
@@ -847,15 +764,15 @@ app.put('/api/rooms/:id', requireAdminAuth, (req, res) => {
 });
 
 // Admin ลบห้องประชุม
-app.delete('/api/rooms/:id', requireAdminAuth, (req, res) => {
+app.delete('/api/rooms/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const targetRoom = db.prepare("SELECT * FROM rooms WHERE id = ?").get(id);
+    const targetRoom = await roomsRepo.getById(id);
     if (!targetRoom) {
       return res.status(404).json({ message: 'ไม่พบข้อมูลห้องประชุมนี้' });
     }
 
-    db.prepare("UPDATE rooms SET is_active = 0 WHERE id = ?").run(id);
+    await roomsRepo.deactivate(id);
     res.json({ success: true, message: 'ลบห้องประชุมเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -867,32 +784,16 @@ app.delete('/api/rooms/:id', requireAdminAuth, (req, res) => {
 // ----------------------------------------------------
 
 // Get Bookings
-app.get('/api/bookings', (req, res) => {
+app.get('/api/bookings', async (req, res) => {
   try {
     const { room_id, date, start_date, end_date } = req.query;
-    let query = `
-      SELECT b.*, r.name as room_name, r.code as room_code, r.color as room_color, r.location as room_location
-      FROM bookings b
-      JOIN rooms r ON b.room_id = r.id
-      WHERE b.status = 'confirmed'
-    `;
-    const params = [];
-
-    if (room_id) {
-      query += " AND b.room_id = ?";
-      params.push(room_id);
-    }
-
-    if (date) {
-      query += " AND (b.start_at LIKE ? OR b.end_at LIKE ?)";
-      params.push(`${date}%`, `${date}%`);
-    } else if (start_date && end_date) {
-      query += " AND (b.start_at >= ? AND b.start_at <= ?)";
-      params.push(`${start_date}T00:00:00`, `${end_date}T23:59:59`);
-    }
-
-    query += " ORDER BY b.start_at ASC";
-    const bookings = db.prepare(query).all(...params);
+    const bookings = await bookingsRepo.getAll({
+      room_id: room_id ? Number(room_id) : undefined,
+      date,
+      start_date,
+      end_date,
+      status: 'confirmed'
+    });
     res.json(bookings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -900,7 +801,7 @@ app.get('/api/bookings', (req, res) => {
 });
 
 // Create Booking
-app.post('/api/bookings', (req, res) => {
+app.post('/api/bookings', async (req, res) => {
   try {
     const { room, room_id, title, emp_code, start_at, end_at, note } = req.body;
 
@@ -908,18 +809,17 @@ app.post('/api/bookings', (req, res) => {
       return res.status(400).json({ message: 'กรุณาระบุรหัสพนักงาน (emp_code)' });
     }
 
-    const emp = db.prepare("SELECT * FROM employees WHERE UPPER(emp_code) = UPPER(?)").get(emp_code.trim());
+    const emp = await employeesRepo.getByCode(emp_code.trim());
     if (!emp || emp.is_active === 0) {
       return res.status(403).json({ message: '⛔ พนักงานรหัสนี้ไม่มีสิทธิ์ใช้งาน หรือถูกระงับสิทธิ์โดยผู้ดูแลระบบ' });
     }
 
-    // Always derive booked_by and department from verified employee record to prevent spoofing
     const booked_by = emp.name;
     const department = emp.department || '';
 
     let targetRoomId = Number(room_id);
     if (!targetRoomId && room) {
-      const r = db.prepare("SELECT id FROM rooms WHERE (name = ? OR code = ?) AND is_active = 1").get(room, room);
+      const r = await roomsRepo.getByNameOrCode(room, room);
       if (r) targetRoomId = r.id;
     }
 
@@ -927,7 +827,7 @@ app.post('/api/bookings', (req, res) => {
       return res.status(400).json({ message: 'กรุณาเลือกห้องประชุม' });
     }
 
-    const roomObj = db.prepare("SELECT * FROM rooms WHERE id = ? AND is_active = 1").get(targetRoomId);
+    const roomObj = await roomsRepo.getById(targetRoomId, true);
     if (!roomObj) {
       return res.status(400).json({ message: 'ไม่พบห้องประชุมที่เลือก หรือห้องประชุมถูกปิดใช้งาน' });
     }
@@ -940,23 +840,30 @@ app.post('/api/bookings', (req, res) => {
     const validEnd = timeCheck.endAt;
 
     const meetingTitle = title && typeof title === 'string' && title.trim() ? title.trim() : 'การประชุมทั่วไป';
-
-    // Force server-generated random 4-digit PIN (ignore any client-provided PIN)
     const bookingPin = generateSecurePin();
     const hashedPin = hashPin(bookingPin);
 
-    // Atomic conflict check & insertion using transaction
-    db.exec('BEGIN IMMEDIATE');
     let result;
     try {
-      const conflict = findConflict(targetRoomId, validStart, validEnd);
-      if (conflict) {
-        db.exec('ROLLBACK');
-        const sTime = conflict.start_at.slice(11, 16);
-        const eTime = conflict.end_at.slice(11, 16);
+      result = await bookingsRepo.createAtomic({
+        room_id: targetRoomId,
+        emp_code: emp.emp_code,
+        title: meetingTitle,
+        booked_by,
+        department,
+        start_at: validStart,
+        end_at: validEnd,
+        note: (note && typeof note === 'string' ? note.trim() : ''),
+        pin: hashedPin
+      });
+    } catch (err) {
+      if (err.status === 409 || (err.message && err.message.includes('จองซ้ำ'))) {
+        const conflict = err.conflict;
+        const sTime = conflict ? conflict.start_at.slice(11, 16) : '';
+        const eTime = conflict ? conflict.end_at.slice(11, 16) : '';
         return res.status(409).json({
-          message: `⛔ ไม่สามารถจองซ้ำได้! ห้อง ${conflict.room_name} ถูกจองแล้วในช่วงเวลาดังกล่าว`,
-          conflict: {
+          message: err.message,
+          conflict: conflict ? {
             id: conflict.id,
             title: conflict.title,
             booked_by: conflict.booked_by,
@@ -964,29 +871,10 @@ app.post('/api/bookings', (req, res) => {
             start_at: conflict.start_at,
             end_at: conflict.end_at,
             time_range: `${sTime} - ${eTime} น.`
-          }
+          } : undefined
         });
       }
-
-      const stmt = db.prepare(`
-        INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      result = stmt.run(
-        targetRoomId,
-        emp.emp_code,
-        meetingTitle,
-        booked_by,
-        department,
-        validStart,
-        validEnd,
-        (note && typeof note === 'string' ? note.trim() : ''),
-        hashedPin
-      );
-      db.exec('COMMIT');
-    } catch (txErr) {
-      try { db.exec('ROLLBACK'); } catch (_) {}
-      throw txErr;
+      throw err;
     }
 
     // Async LINE notification
@@ -994,21 +882,13 @@ app.post('/api/bookings', (req, res) => {
       const roomName = roomObj.name || `ห้อง #${targetRoomId}`;
       const dateThai = formatBookingThaiDate(validStart);
       const timeRange = `${validStart.slice(11, 16)} - ${validEnd.slice(11, 16)} น.`;
-
-      const lineMsg = `🔔 มีการจองห้องประชุมใหม่!
-🏢 ห้อง: ${roomName}
-📌 หัวข้อ: ${meetingTitle}
-👤 ผู้จอง: ${booked_by}${department ? ' (' + department + ')' : ''}
-🗓️ วันที่: ${dateThai}
-⏰ เวลา: ${timeRange}
-${(note && typeof note === 'string' && note.trim()) ? '💬 หมายเหตุ: ' + note.trim() + '\n' : ''}✅ สถานะ: ยืนยันการจองเรียบร้อย`;
-
+      const lineMsg = `🔔 มีการจองห้องประชุมใหม่!\n🏢 ห้อง: ${roomName}\n📌 หัวข้อ: ${meetingTitle}\n👤 ผู้จอง: ${booked_by}${department ? ' (' + department + ')' : ''}\n🗓️ วันที่: ${dateThai}\n⏰ เวลา: ${timeRange}\n${(note && typeof note === 'string' && note.trim()) ? '💬 หมายเหตุ: ' + note.trim() + '\n' : ''}✅ สถานะ: ยืนยันการจองเรียบร้อย`;
       sendLineNotification(lineMsg).catch(() => {});
-    } catch (e) {}
+    } catch (_) {}
 
     res.status(201).json({
       success: true,
-      id: result.lastInsertRowid,
+      id: result.id,
       pin: bookingPin,
       message: 'จองห้องประชุมเรียบร้อยแล้ว'
     });
@@ -1018,7 +898,7 @@ ${(note && typeof note === 'string' && note.trim()) ? '💬 หมายเห�
 });
 
 // Cancel Booking
-app.delete('/api/bookings/:id', (req, res) => {
+app.delete('/api/bookings/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1028,12 +908,12 @@ app.delete('/api/bookings/:id', (req, res) => {
 
     const pin = req.body?.pin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
 
-    const booking = db.prepare("SELECT * FROM bookings WHERE id = ?").get(id);
+    const booking = await bookingsRepo.getById(id);
     if (!booking) {
       return res.status(404).json({ message: 'ไม่พบรายการจองนี้' });
     }
 
-    const isAdmin = pin ? checkAdminPin(pin) : false;
+    const isAdmin = pin ? await checkAdminPin(pin) : false;
     const isBookingPin = pin ? verifyPinHash(pin, booking.pin) : false;
 
     if (!isAdmin && !isBookingPin) {
@@ -1042,24 +922,17 @@ app.delete('/api/bookings/:id', (req, res) => {
       });
     }
 
-    db.prepare("UPDATE bookings SET status = 'cancelled' WHERE id = ?").run(id);
+    await bookingsRepo.cancel(id);
 
     // ส่งแจ้งเตือนยกเลิกทาง LINE
     try {
-      const roomObj = db.prepare("SELECT name FROM rooms WHERE id = ?").get(booking.room_id);
+      const roomObj = await roomsRepo.getById(booking.room_id);
       const roomName = roomObj?.name || `ห้อง #${booking.room_id}`;
       const dateThai = formatBookingThaiDate(booking.start_at);
       const timeRange = `${booking.start_at.slice(11, 16)} - ${booking.end_at.slice(11, 16)} น.`;
-
-      const lineMsg = `❌ มีการยกเลิกการจองห้องประชุม!
-🏢 ห้อง: ${roomName}
-📌 หัวข้อ: ${booking.title}
-👤 ผู้จองเดิม: ${booking.booked_by}
-🗓️ วันที่: ${dateThai} (เวลา ${timeRange})
-🟢 สถานะ: ว่างพร้อมให้ผู้อื่นเข้าใช้งานหรือจองต่อได้ทันที`;
-
+      const lineMsg = `❌ มีการยกเลิกการจองห้องประชุม!\n🏢 ห้อง: ${roomName}\n📌 หัวข้อ: ${booking.title}\n👤 ผู้จองเดิม: ${booking.booked_by}\n🗓️ วันที่: ${dateThai} (เวลา ${timeRange})\n🟢 สถานะ: ว่างพร้อมให้ผู้อื่นเข้าใช้งานหรือจองต่อได้ทันที`;
       sendLineNotification(lineMsg).catch(() => {});
-    } catch (e) {}
+    } catch (_) {}
 
     res.json({ success: true, message: 'ยกเลิกการจองห้องประชุมเรียบร้อยแล้ว' });
   } catch (err) {
@@ -1068,7 +941,7 @@ app.delete('/api/bookings/:id', (req, res) => {
 });
 
 // Edit Booking (แก้ไขข้อมูลการจองห้องประชุม)
-app.put('/api/bookings/:id', (req, res) => {
+app.put('/api/bookings/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1079,13 +952,12 @@ app.put('/api/bookings/:id', (req, res) => {
     const { pin: bodyPin, room_id, title, booked_by, department, start_at, end_at, note } = req.body || {};
     const pin = bodyPin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
 
-    const booking = db.prepare("SELECT * FROM bookings WHERE id = ?").get(id);
+    const booking = await bookingsRepo.getById(id);
     if (!booking) {
       return res.status(404).json({ message: 'ไม่พบรายการจองนี้' });
     }
 
-    // Verify PIN (allow booking pin or admin pin)
-    const isAdmin = pin ? checkAdminPin(pin) : false;
+    const isAdmin = pin ? await checkAdminPin(pin) : false;
     const isBookingPin = pin ? verifyPinHash(pin, booking.pin) : false;
 
     if (!isAdmin && !isBookingPin) {
@@ -1093,7 +965,7 @@ app.put('/api/bookings/:id', (req, res) => {
     }
 
     const targetRoomId = Number(room_id || booking.room_id);
-    const roomObj = db.prepare("SELECT * FROM rooms WHERE id = ? AND is_active = 1").get(targetRoomId);
+    const roomObj = await roomsRepo.getById(targetRoomId, true);
     if (!roomObj) {
       return res.status(400).json({ message: 'ไม่พบห้องประชุมที่เลือก หรือห้องประชุมถูกปิดใช้งาน' });
     }
@@ -1107,52 +979,41 @@ app.put('/api/bookings/:id', (req, res) => {
     const validStart = timeCheck.startAt;
     const validEnd = timeCheck.endAt;
 
-    db.exec('BEGIN IMMEDIATE');
+    const newTitle = (title && typeof title === 'string' && title.trim()) ? title.trim() : booking.title;
+    const newBookedBy = (booked_by && typeof booked_by === 'string' && booked_by.trim()) ? booked_by.trim() : booking.booked_by;
+    const newDept = department !== undefined ? String(department).trim() : booking.department;
+    const newNote = note !== undefined ? String(note).trim() : booking.note;
+
     try {
-      // Conflict Check (exclude current booking ID)
-      const conflict = findConflict(targetRoomId, validStart, validEnd, id);
-      if (conflict) {
-        db.exec('ROLLBACK');
-        const sTime = conflict.start_at.slice(11, 16);
-        const eTime = conflict.end_at.slice(11, 16);
+      await bookingsRepo.updateAtomic(id, {
+        room_id: targetRoomId,
+        title: newTitle,
+        booked_by: newBookedBy,
+        department: newDept,
+        start_at: validStart,
+        end_at: validEnd,
+        note: newNote
+      });
+    } catch (err) {
+      if (err.status === 409 || (err.message && err.message.includes('จองซ้ำ'))) {
+        const conflict = err.conflict;
+        const sTime = conflict ? conflict.start_at.slice(11, 16) : '';
+        const eTime = conflict ? conflict.end_at.slice(11, 16) : '';
         return res.status(409).json({
-          message: `⛔ ไม่สามารถแก้ไขได้! ห้อง ${conflict.room_name} ถูกจองแล้วในช่วงเวลาดังกล่าว (${sTime} - ${eTime} น.)`,
+          message: err.message,
           conflict
         });
       }
-
-      const newTitle = (title && typeof title === 'string' && title.trim()) ? title.trim() : booking.title;
-      const newBookedBy = (booked_by && typeof booked_by === 'string' && booked_by.trim()) ? booked_by.trim() : booking.booked_by;
-      const newDept = department !== undefined ? String(department).trim() : booking.department;
-      const newNote = note !== undefined ? String(note).trim() : booking.note;
-
-      db.prepare(`
-        UPDATE bookings
-        SET room_id = ?, title = ?, booked_by = ?, department = ?, start_at = ?, end_at = ?, note = ?
-        WHERE id = ?
-      `).run(targetRoomId, newTitle, newBookedBy, newDept, validStart, validEnd, newNote, id);
-      db.exec('COMMIT');
-    } catch (txErr) {
-      try { db.exec('ROLLBACK'); } catch (_) {}
-      throw txErr;
+      throw err;
     }
 
-    // ส่งแจ้งเตือนการแก้ไขทาง LINE
     try {
       const roomName = roomObj.name || `ห้อง #${targetRoomId}`;
       const dateThai = formatBookingThaiDate(validStart);
       const timeRange = `${validStart.slice(11, 16)} - ${validEnd.slice(11, 16)} น.`;
-
-      const lineMsg = `✏️ มีการแก้ไขข้อมูลการจองห้องประชุม!
-🏢 ห้อง: ${roomName}
-📌 หัวข้อ: ${newTitle}
-👤 ผู้จอง: ${newBookedBy}${newDept ? ' (' + newDept + ')' : ''}
-🗓️ วันที่: ${dateThai}
-⏰ เวลาใหม่: ${timeRange}
-${newNote ? '💬 หมายเหตุ: ' + newNote + '\n' : ''}✅ สถานะ: ปรับปรุงข้อมูลเรียบร้อย`;
-
+      const lineMsg = `✏️ มีการแก้ไขข้อมูลการจองห้องประชุม!\n🏢 ห้อง: ${roomName}\n📌 หัวข้อ: ${newTitle}\n👤 ผู้จอง: ${newBookedBy}${newDept ? ' (' + newDept + ')' : ''}\n🗓️ วันที่: ${dateThai}\n⏰ เวลาใหม่: ${timeRange}\n${newNote ? '💬 หมายเหตุ: ' + newNote + '\n' : ''}✅ สถานะ: ปรับปรุงข้อมูลเรียบร้อย`;
       sendLineNotification(lineMsg).catch(() => {});
-    } catch (e) {}
+    } catch (_) {}
 
     res.json({ success: true, message: 'บันทึกการแก้ไขข้อมูลการจองเรียบร้อยแล้ว' });
   } catch (err) {
@@ -1161,7 +1022,7 @@ ${newNote ? '💬 หมายเหตุ: ' + newNote + '\n' : ''}✅ สถ�
 });
 
 // Kiosk Quick Book
-app.post('/api/kiosk/quick-book', requireKioskAuth, (req, res) => {
+app.post('/api/kiosk/quick-book', requireKioskAuth, async (req, res) => {
   try {
     const { room_id, minutes, booked_by, title } = req.body;
     const allowedDurations = [15, 30, 45, 60];
@@ -1171,7 +1032,7 @@ app.post('/api/kiosk/quick-book', requireKioskAuth, (req, res) => {
       return res.status(400).json({ message: 'ระยะเวลาต้องเป็น 15, 30, 45 หรือ 60 นาที' });
     }
 
-    const room = db.prepare("SELECT * FROM rooms WHERE id = ? AND is_active = 1").get(room_id);
+    const room = await roomsRepo.getById(room_id, true);
     if (!room) {
       return res.status(400).json({ message: 'ไม่พบห้องประชุม หรือห้องถูกปิดใช้งาน' });
     }
@@ -1196,41 +1057,31 @@ app.post('/api/kiosk/quick-book', requireKioskAuth, (req, res) => {
     const kioskPin = generateSecurePin();
     const hashedPin = hashPin(kioskPin);
 
-    db.exec('BEGIN IMMEDIATE');
     let result;
     try {
-      const conflict = findConflict(room_id, startAt, endAt);
-      if (conflict) {
-        db.exec('ROLLBACK');
+      result = await bookingsRepo.createAtomic({
+        room_id: Number(room_id),
+        emp_code: 'KIOSK',
+        title: title || `จองด่วนหน้าห้อง (${duration} นาที)`,
+        booked_by: booked_by || 'พนักงานหน้าห้อง',
+        department: 'Walk-in',
+        start_at: startAt,
+        end_at: endAt,
+        note: 'จองผ่านหน้าจอหน้าห้องประชุม',
+        pin: hashedPin
+      });
+    } catch (err) {
+      if (err.status === 409 || (err.message && err.message.includes('จองซ้ำ'))) {
         return res.status(409).json({
-          message: `ห้องไม่ว่างในช่วงเวลาดังกล่าว ชนกับ "${conflict.title}"`
+          message: err.conflict ? `ห้องไม่ว่างในช่วงเวลาดังกล่าว ชนกับ "${err.conflict.title}"` : err.message
         });
       }
-
-      const stmt = db.prepare(`
-        INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      result = stmt.run(
-        room_id,
-        'KIOSK',
-        title || `จองด่วนหน้าห้อง (${duration} นาที)`,
-        booked_by || 'พนักงานหน้าห้อง',
-        'Walk-in',
-        startAt,
-        endAt,
-        'จองผ่านหน้าจอหน้าห้องประชุม',
-        hashedPin
-      );
-      db.exec('COMMIT');
-    } catch (txErr) {
-      try { db.exec('ROLLBACK'); } catch (_) {}
-      throw txErr;
+      throw err;
     }
 
     res.status(201).json({
       success: true,
-      id: result.lastInsertRowid,
+      id: result.id,
       start_at: startAt,
       end_at: endAt,
       pin: kioskPin
@@ -1241,16 +1092,9 @@ app.post('/api/kiosk/quick-book', requireKioskAuth, (req, res) => {
 });
 
 // Export CSV
-app.get('/api/bookings/export', (req, res) => {
+app.get('/api/bookings/export', async (req, res) => {
   try {
-    const bookings = db.prepare(`
-      SELECT b.id, r.name as room_name, r.code as room_code, b.title, b.booked_by, b.department,
-             b.start_at, b.end_at, b.note, b.status, b.created_at
-      FROM bookings b
-      JOIN rooms r ON b.room_id = r.id
-      ORDER BY b.start_at DESC
-    `).all();
-
+    const bookings = await bookingsRepo.getAll();
     let csv = '\uFEFF';
     csv += 'รหัสจอง,รหัสห้อง,ห้องประชุม,หัวข้อการประชุม,ผู้จอง,แผนก,เวลาเริ่ม,เวลาสิ้นสุด,สถานะ,หมายเหตุ,วันที่บันทึก\n';
 
@@ -1309,6 +1153,7 @@ if (require.main === module) {
     const localIp = getLocalIp();
     console.log('\n=============================================================');
     console.log('       🚀 ระบบจองห้องประชุมสำหรับพนักงานองค์กร               ');
+    console.log(`       ฐานข้อมูลที่ใช้งาน: ${dbProvider.toUpperCase()}`);
     console.log('=============================================================');
     console.log(` 💻 เครื่องนี้ (Localhost):   http://localhost:${PORT}`);
     console.log(` 🌐 ทุกอุปกรณ์ในวง Wi-Fi/LAN: http://${localIp}:${PORT}`);
@@ -1326,6 +1171,8 @@ module.exports = {
   app,
   server,
   db,
+  dbProvider,
+  repositories,
   checkAdminPin,
   verifyPinHash,
   hashPin,
