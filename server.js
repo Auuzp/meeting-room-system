@@ -1,3 +1,12 @@
+// Load environment variables from .env if present (supported natively in Node.js 20.6.0+)
+if (typeof process.loadEnvFile === 'function') {
+  try {
+    process.loadEnvFile();
+  } catch (err) {
+    // .env is optional
+  }
+}
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');

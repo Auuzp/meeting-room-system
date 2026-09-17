@@ -1,4 +1,12 @@
 #!/usr/bin/env node
+if (typeof process.loadEnvFile === 'function') {
+  try {
+    process.loadEnvFile();
+  } catch (err) {
+    // .env is optional
+  }
+}
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
