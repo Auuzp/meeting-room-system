@@ -25,6 +25,14 @@ if %errorlevel% neq 0 (
 :: Auto open browser after 2 seconds in background
 start /b "" cmd /c "timeout /t 2 >nul & start http://localhost:3000"
 
+:: Set environment defaults for local execution if not provided
+if "%ADMIN_PIN%"=="" (
+    set "ADMIN_PIN=8888"
+)
+if "%KIOSK_SECRET%"=="" (
+    set "KIOSK_SECRET=kiosk_secret_local"
+)
+
 :: Start the server
 "%NODE_BIN%" server.js
 
