@@ -44,7 +44,15 @@ if not exist "node_modules\" (
 :: 3. เปิด Web Browser อัตโนมัติหลัง 2 วินาที
 start /b "" cmd /c "timeout /t 2 >nul & start http://localhost:3000"
 
-:: 4. เริ่มต้นเซิร์ฟเวอร์
+:: 4. กำหนดค่าเริ่มต้นสำหรับรัน Local (หากยังไม่ได้กำหนดไว้)
+if "%ADMIN_PIN%"=="" (
+    set "ADMIN_PIN=8888"
+)
+if "%KIOSK_SECRET%"=="" (
+    set "KIOSK_SECRET=kiosk_secret_local"
+)
+
+:: 5. เริ่มต้นเซิร์ฟเวอร์
 echo  [OK] เริ่มต้นระบบจองห้องประชุมเรียบร้อยแล้ว...
 echo  (กด Ctrl + C เพื่อหยุดการทำงานของระบบ)
 echo.
