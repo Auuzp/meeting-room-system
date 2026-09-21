@@ -4,7 +4,8 @@ services:
     env: node
     plan: free
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: npm start
     envVars:
-      - key: PORT
-        value: 3000
+      # Render supplies PORT at runtime. Do not override it.
+      - key: NODE_VERSION
+        value: 22.22.0
