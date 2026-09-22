@@ -363,6 +363,28 @@ async function runTests() {
     const cancelledRow = db.prepare("SELECT status FROM bookings WHERE id = ?").get(autoPinBooking.body.id);
     assert(cancelledRow.status === 'cancelled', 'Booking status transitioned to cancelled in DB');
 
+    // Cancel booking with admin PIN in body { pin: adminPin }
+    const adminCancelBooking = await request('POST', '/api/bookings', {
+      room_id: 1,
+      emp_code: 'EMP101',
+      title: 'จองเพื่อทดสอบยกเลิกด้วย Admin Password',
+      start_at: '2026-11-14T09:00:00',
+      end_at: '2026-11-14T10:00:00'
+    });
+    assert(adminCancelBooking.status === 201, 'Booking created for admin cancel test (201)');
+
+    const editWithAdminPinRes = await request('PUT', `/api/bookings/${adminCancelBooking.body.id}`, {
+      pin: adminPin,
+      title: 'แก้ไขหัวข้อด้วยรหัส Admin'
+    });
+    assert(editWithAdminPinRes.status === 200, 'Successfully edits booking using admin PIN in body');
+
+    const cancelWithAdminPinRes = await request('DELETE', `/api/bookings/${adminCancelBooking.body.id}`, { pin: adminPin });
+    assert(cancelWithAdminPinRes.status === 200, 'Successfully cancels booking using admin password in body');
+
+    const adminCancelledRow = db.prepare("SELECT status FROM bookings WHERE id = ?").get(adminCancelBooking.body.id);
+    assert(adminCancelledRow.status === 'cancelled', 'Booking status transitioned to cancelled via admin PIN in DB');
+
     // -----------------------------------------------------------------
     // 5. Booking Conflict Detection & Concurrency (Transactions)
     // -----------------------------------------------------------------

@@ -906,7 +906,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
       return res.status(400).json({ message: 'ไม่อนุญาตให้ส่ง PIN ผ่าน query string' });
     }
 
-    const pin = req.body?.pin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
+    const pin = req.body?.pin || req.body?.admin_pin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
 
     const booking = await bookingsRepo.getById(id);
     if (!booking) {
@@ -950,7 +950,7 @@ app.put('/api/bookings/:id', async (req, res) => {
     }
 
     const { pin: bodyPin, room_id, title, booked_by, department, start_at, end_at, note } = req.body || {};
-    const pin = bodyPin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
+    const pin = bodyPin || req.body?.admin_pin || req.headers['x-admin-pin'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : null);
 
     const booking = await bookingsRepo.getById(id);
     if (!booking) {
