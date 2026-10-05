@@ -915,10 +915,11 @@ app.delete('/api/bookings/:id', async (req, res) => {
 
     const isAdmin = pin ? await checkAdminPin(pin) : false;
     const isBookingPin = pin ? verifyPinHash(pin, booking.pin) : false;
+    const isOwnerEmpCode = pin && booking.emp_code && String(pin).trim().toUpperCase() === String(booking.emp_code).trim().toUpperCase();
 
-    if (!isAdmin && !isBookingPin) {
+    if (!isAdmin && !isBookingPin && !isOwnerEmpCode) {
       return res.status(401).json({ 
-        message: 'รหัส PIN ไม่ถูกต้อง (กรุณาระบุรหัส PIN 4 หลักของผู้จอง หรือรหัสแอดมิน)' 
+        message: 'รหัสไม่ถูกต้อง (กรุณาระบุรหัส PIN 4 หลัก, รหัสพนักงานของผู้จอง หรือรหัสแอดมิน)' 
       });
     }
 
@@ -959,9 +960,10 @@ app.put('/api/bookings/:id', async (req, res) => {
 
     const isAdmin = pin ? await checkAdminPin(pin) : false;
     const isBookingPin = pin ? verifyPinHash(pin, booking.pin) : false;
+    const isOwnerEmpCode = pin && booking.emp_code && String(pin).trim().toUpperCase() === String(booking.emp_code).trim().toUpperCase();
 
-    if (!isAdmin && !isBookingPin) {
-      return res.status(401).json({ message: 'รหัส PIN ไม่ถูกต้อง (กรุณาระบุรหัส PIN ของผู้จอง หรือรหัสแอดมิน)' });
+    if (!isAdmin && !isBookingPin && !isOwnerEmpCode) {
+      return res.status(401).json({ message: 'รหัสไม่ถูกต้อง (กรุณาระบุรหัส PIN 4 หลัก, รหัสพนักงานของผู้จอง หรือรหัสแอดมิน)' });
     }
 
     const targetRoomId = Number(room_id || booking.room_id);
