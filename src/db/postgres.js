@@ -16,7 +16,7 @@ function createPostgresDb(options = {}) {
     connectionString,
     max: Number(process.env.DB_POOL_MAX) || 5,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000
+    connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS) || 30000
   });
 
   pool.on('error', (err) => {
@@ -33,13 +33,30 @@ function createPostgresDb(options = {}) {
 
   const nativeQuery = pool.query.bind(pool);
   const nativeConnect = pool.connect.bind(pool);
-  pool.ready = nativeQuery(schema);
+  let schemaReady = null;
+
+  // Neon can pause its free compute after inactivity. Initialize lazily and allow
+  // a later request to retry if the first connection attempt times out.
+  function ensureSchema() {
+    if (!schemaReady) {
+      schemaReady = nativeQuery(schema).catch((err) => {
+        schemaReady = null;
+        console.error('[postgres] Schema initialization failed:', err.code || err.name || 'unknown');
+        throw err;
+      });
+      // The request awaiting this promise handles the failure. This handler also
+      // prevents an unobserved initialization rejection from terminating Node.
+      schemaReady.catch(() => {});
+    }
+    return schemaReady;
+  }
+
   pool.query = async (...args) => {
-    await pool.ready;
+    await ensureSchema();
     return nativeQuery(...args);
   };
   pool.connect = async () => {
-    await pool.ready;
+    await ensureSchema();
     return nativeConnect();
   };
 
