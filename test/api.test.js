@@ -474,6 +474,14 @@ async function runTests() {
     const validBearerAdmin = await request('GET', '/api/admin/employees', null, { 'Authorization': `Bearer ${adminPin}` });
     assert(validBearerAdmin.status === 200, 'Allows admin access with Authorization: Bearer <pin> header (200)');
 
+    // Booking exports contain employee and meeting details, so they require Admin PIN.
+    const noAuthExport = await request('GET', '/api/bookings/export');
+    assert(noAuthExport.status === 401, 'Denies booking export without Admin PIN (401)');
+
+    const validExport = await request('GET', '/api/bookings/export', null, { 'x-admin-pin': adminPin });
+    assert(validExport.status === 200, 'Allows booking export with valid Admin PIN (200)');
+    assert(validExport.headers['content-type']?.includes('text/csv'), 'Returns booking export as CSV after admin auth');
+
     // Admin Room CRUD
     const addRoomRes = await request('POST', '/api/rooms', {
       name: 'ห้องทดสอบแอดมินใหม่',
