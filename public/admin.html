@@ -242,9 +242,9 @@
               <h3 style="font-size:17px; margin:0;">📊 สรุปรายงานการจองห้องประชุม</h3>
               <p style="font-size:13px; color:var(--muted); margin-top:2px;">ดาวน์โหลดไฟล์ข้อมูลรายการจองทั้งหมดเพื่อนำไปทำสรุปรายงานใน Excel</p>
             </div>
-            <a href="/api/bookings/export" class="btn btn-primary btn-sm" style="text-decoration:none;">
+            <button type="button" id="exportBookingsBtn" class="btn btn-primary btn-sm" onclick="exportBookings()">
               📥 ดาวน์โหลดไฟล์ Excel / CSV
-            </a>
+            </button>
           </div>
           <div class="card-body" style="padding:24px;">
             <p style="font-size:14px; color:var(--muted); line-height:1.6;">
@@ -505,6 +505,45 @@
         return payload && typeof payload === 'object' ? payload : {};
       } catch (_) {
         return {};
+      }
+    }
+
+    async function exportBookings() {
+      const currentPin = getValidAdminPin();
+      if (!currentPin) return;
+
+      const button = document.getElementById('exportBookingsBtn');
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = 'กำลังเตรียมไฟล์...';
+
+      try {
+        const res = await fetch('/api/bookings/export', {
+          headers: { 'x-admin-pin': currentPin }
+        });
+        if (!res.ok) {
+          const data = await readApiError(res);
+          showAdminNotice(data.message || 'ดาวน์โหลดรายงานไม่สำเร็จ', 'error');
+          return;
+        }
+
+        const file = await res.blob();
+        const contentDisposition = res.headers.get('Content-Disposition') || '';
+        const filename = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1] || 'meeting-bookings.csv';
+        const downloadUrl = URL.createObjectURL(file);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+        showAdminNotice('ดาวน์โหลดรายงานเรียบร้อยแล้ว');
+      } catch (_) {
+        showAdminNotice('เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาลองใหม่', 'error');
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
       }
     }
 
