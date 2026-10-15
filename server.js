@@ -173,6 +173,23 @@ async function checkAdminPin(pin) {
   return verifyPinHash(pin, row.value);
 }
 
+function respondToAdminAuthError(res, err) {
+  const errorCode = String(err && err.code || '').toUpperCase();
+  const quotaExceeded = Number(err && err.code) === 8 || errorCode === 'RESOURCE_EXHAUSTED';
+
+  console.error('[admin-auth] PIN lookup failed:', {
+    code: err && err.code,
+    message: err && err.message
+  });
+
+  return res.status(503).json({
+    success: false,
+    message: quotaExceeded
+      ? 'โควตาฐานข้อมูลเต็ม จึงยังตรวจสอบสิทธิ์ไม่ได้ กรุณาติดต่อผู้ดูแลระบบ'
+      : 'ระบบตรวจสอบสิทธิ์ผู้ดูแลระบบไม่พร้อมใช้งานชั่วคราว กรุณาลองใหม่ภายหลัง'
+  });
+}
+
 // Middleware: Require Admin Authentication
 async function requireAdminAuth(req, res, next) {
   if (req.query && (req.query.admin_pin || req.query.pin)) {
@@ -190,7 +207,14 @@ async function requireAdminAuth(req, res, next) {
   }
 
   const pin = extractAdminPin(req);
-  if (await checkAdminPin(pin)) {
+  let isAuthorized = false;
+  try {
+    isAuthorized = await checkAdminPin(pin);
+  } catch (err) {
+    return respondToAdminAuthError(res, err);
+  }
+
+  if (isAuthorized) {
     resetAdminAuthRateLimit(clientIp);
     return next();
   }
@@ -447,7 +471,14 @@ app.post('/api/admin/verify', async (req, res) => {
   }
 
   const pin = extractAdminPin(req);
-  if (await checkAdminPin(pin)) {
+  let isAuthorized = false;
+  try {
+    isAuthorized = await checkAdminPin(pin);
+  } catch (err) {
+    return respondToAdminAuthError(res, err);
+  }
+
+  if (isAuthorized) {
     resetAdminAuthRateLimit(clientIp);
     return res.json({ success: true });
   }
