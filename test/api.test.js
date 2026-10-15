@@ -395,9 +395,29 @@ async function runTests() {
       emp_code: 'EMP102',
       title: 'ประชุมประจำสัปดาห์ Room B',
       start_at: '2026-11-15T13:00:00',
-      end_at: '2026-11-15T15:00:00'
+      end_at: '2026-11-15T15:00:00',
+      note: 'ข้อมูลสาธารณะที่ได้รับอนุญาต'
     });
     assert(baseBooking.status === 201, 'Base booking on Room B created (13:00-15:00)');
+
+    // Public schedule keeps the selected display details but never exposes internal identifiers or PIN hashes.
+    const publicBookingsRes = await request('GET', '/api/bookings?date=2026-11-15');
+    assert(publicBookingsRes.status === 200 && Array.isArray(publicBookingsRes.body), 'Public schedule returns a booking list (200)');
+    const publicBaseBooking = publicBookingsRes.body.find(booking => booking.id === baseBooking.body.id);
+    assert(!!publicBaseBooking, 'Public schedule includes the confirmed booking');
+    assert(
+      publicBaseBooking &&
+      !Object.prototype.hasOwnProperty.call(publicBaseBooking, 'emp_code') &&
+      !Object.prototype.hasOwnProperty.call(publicBaseBooking, 'pin'),
+      'Public schedule omits employee codes and booking PIN hashes'
+    );
+    assert(
+      publicBaseBooking?.title === 'ประชุมประจำสัปดาห์ Room B' &&
+      publicBaseBooking?.booked_by === 'สมชาย วิจิตรศิลป์' &&
+      publicBaseBooking?.department === 'ฝ่าย IT' &&
+      publicBaseBooking?.note === 'ข้อมูลสาธารณะที่ได้รับอนุญาต',
+      'Public schedule retains the allowed booking details'
+    );
 
     // Overlapping booking: 13:30 - 14:30
     const conflictBooking = await request('POST', '/api/bookings', {
