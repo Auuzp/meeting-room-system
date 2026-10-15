@@ -18,6 +18,8 @@ const crypto = require('crypto');
 const QRCode = require('qrcode');
 
 const { initDatabase, getDatabase } = require('./src/db');
+const { createPostgresDb } = require('./src/db/postgres');
+const { migrateFirestoreToPostgres } = require('./src/db/migrate-firestore-to-postgres');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -34,12 +36,23 @@ const {
 
 app.use(cors());
 app.use(express.json());
+let databaseMigrationInProgress = false;
 
 // Prevent stale caching on all API requests
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+  next();
+});
+
+// Pause API writes briefly while the one-time database copy runs.
+app.use('/api', (req, res, next) => {
+  const migrationPath = '/admin/database/migrate-firestore-to-postgres';
+  const isReadOnly = ['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+  if (databaseMigrationInProgress && !isReadOnly && req.path !== migrationPath) {
+    return res.status(503).json({ message: 'กำลังย้ายฐานข้อมูล กรุณารอสักครู่แล้วลองใหม่' });
+  }
   next();
 });
 
@@ -807,6 +820,52 @@ app.delete('/api/rooms/:id', requireAdminAuth, async (req, res) => {
     res.json({ success: true, message: 'ลบห้องประชุมเรียบร้อยแล้ว' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// One-time admin-triggered Firestore -> Neon copy. It never removes source data.
+app.post('/api/admin/database/migrate-firestore-to-postgres', requireAdminAuth, async (req, res) => {
+  if (process.env.ALLOW_FIRESTORE_TO_POSTGRES_MIGRATION !== 'true') {
+    return res.status(404).json({ message: 'ไม่เปิดใช้งานขั้นตอนย้ายฐานข้อมูลนี้' });
+  }
+  if (dbProvider !== 'firestore') {
+    return res.status(409).json({ message: 'ให้คัดลอกจาก Firestore ขณะที่ระบบยังใช้ฐานข้อมูลเดิมก่อน' });
+  }
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ message: 'ยังไม่ได้ตั้งค่า DATABASE_URL ใน Render' });
+  }
+  if (databaseMigrationInProgress) {
+    return res.status(409).json({ message: 'กำลังย้ายฐานข้อมูลอยู่ กรุณารอให้เสร็จก่อน' });
+  }
+
+  databaseMigrationInProgress = true;
+  let destination = null;
+  try {
+    destination = createPostgresDb();
+    const result = await migrateFirestoreToPostgres(db, destination);
+    return res.json({
+      success: true,
+      verified: true,
+      alreadyMigrated: result.alreadyMigrated,
+      counts: result.counts,
+      message: 'คัดลอกและตรวจสอบข้อมูลปลายทางเรียบร้อย ข้อมูล Firestore ต้นทางยังคงอยู่'
+    });
+  } catch (err) {
+    const errorCode = String(err && err.code || '').toUpperCase();
+    const quotaExceeded = Number(err && err.code) === 8 || errorCode === 'RESOURCE_EXHAUSTED';
+    console.error('[database-migration] Copy failed:', { code: err && err.code, name: err && err.name });
+    return res.status(quotaExceeded ? 503 : 500).json({
+      success: false,
+      message: quotaExceeded
+        ? 'โควตา Firestore เต็ม ระบบยังอ่านข้อมูลเพื่อย้ายไม่ได้ กรุณารอให้โควตากลับมาแล้วลองอีกครั้ง'
+        : 'คัดลอกข้อมูลไม่สำเร็จ ตรวจสอบการตั้งค่า Neon และบันทึกระบบก่อนลองใหม่',
+      code: err && err.code ? String(err.code) : undefined
+    });
+  } finally {
+    if (destination) {
+      try { await destination.end(); } catch (_) {}
+    }
+    databaseMigrationInProgress = false;
   }
 });
 
