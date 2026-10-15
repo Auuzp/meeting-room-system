@@ -1184,7 +1184,7 @@ app.post('/api/kiosk/quick-book', requireKioskAuth, async (req, res) => {
 });
 
 // Export CSV
-app.get('/api/bookings/export', async (req, res) => {
+app.get('/api/bookings/export', requireAdminAuth, async (req, res) => {
   try {
     const bookings = await bookingsRepo.getAll();
     let csv = '\uFEFF';
