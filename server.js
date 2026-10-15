@@ -884,7 +884,19 @@ app.get('/api/bookings', async (req, res) => {
       end_date,
       status: 'confirmed'
     });
-    res.json(bookings);
+    // Public schedule clients only need display fields. Never expose internal employee codes
+    // or booking PIN hashes through this unauthenticated endpoint.
+    const publicBookingFields = [
+      'id', 'room_id', 'title', 'booked_by', 'department',
+      'start_at', 'end_at', 'note', 'status',
+      'room_name', 'room_code', 'room_color', 'room_location'
+    ];
+    const publicBookings = bookings.map((booking) => Object.fromEntries(
+      publicBookingFields
+        .filter((field) => Object.prototype.hasOwnProperty.call(booking, field))
+        .map((field) => [field, booking[field]])
+    ));
+    res.json(publicBookings);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
