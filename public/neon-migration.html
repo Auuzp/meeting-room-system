@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ย้ายฐานข้อมูลไป Neon</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #10131b; color: #eef2ff; }
+    main { width: min(92vw, 520px); box-sizing: border-box; padding: 28px; border: 1px solid #303747; border-radius: 16px; background: #191e2a; }
+    h1 { margin: 0 0 10px; font-size: 1.4rem; }
+    p { color: #bbc4d7; line-height: 1.6; }
+    label { display: block; margin: 22px 0 8px; }
+    input { width: 100%; box-sizing: border-box; padding: 14px; border: 1px solid #424b60; border-radius: 10px; background: #111622; color: inherit; font-size: 1rem; }
+    button { width: 100%; margin-top: 16px; padding: 14px; border: 0; border-radius: 10px; background: #4f7df3; color: white; font-weight: 700; font-size: 1rem; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #result { margin-top: 18px; white-space: pre-wrap; }
+    .hint { font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>คัดลอกฐานข้อมูลไป Neon</h1>
+    <p>หน้านี้ใช้ครั้งเดียวเพื่อคัดลอกข้อมูลจาก Firestore ไป Neon โดยคงรหัสรายการและ PIN ที่เก็บแบบแฮชไว้ ระบบจะตรวจสอบข้อมูลก่อนยืนยัน และไม่ลบข้อมูลต้นทาง</p>
+    <p class="hint">ก่อนเริ่ม ให้ตั้งค่า DATABASE_URL และเปิด ALLOW_FIRESTORE_TO_POSTGRES_MIGRATION=true ใน Render โดยคง DB_PROVIDER=firestore ไว้ก่อน</p>
+    <form id="migration-form">
+      <label for="admin-pin">Admin PIN</label>
+      <input id="admin-pin" type="password" inputmode="numeric" autocomplete="current-password" required>
+      <button id="submit-button" type="submit">เริ่มคัดลอกและตรวจสอบ</button>
+    </form>
+    <div id="result" role="status" aria-live="polite"></div>
+  </main>
+  <script>
+    const form = document.getElementById('migration-form');
+    const button = document.getElementById('submit-button');
+    const result = document.getElementById('result');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      button.disabled = true;
+      result.textContent = 'กำลังตรวจสอบและคัดลอกข้อมูล กรุณาอย่าปิดหน้านี้';
+      try {
+        const response = await fetch('/api/admin/database/migrate-firestore-to-postgres', {
+          method: 'POST',
+          headers: { 'X-Admin-PIN': document.getElementById('admin-pin').value }
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.message || 'ย้ายข้อมูลไม่สำเร็จ');
+        const counts = Object.entries(body.counts || {}).map(([name, count]) => name + ': ' + count).join('\n');
+        result.textContent = body.message + '\n\n' + counts + '\n\nขั้นต่อไป: เปลี่ยน DB_PROVIDER เป็น postgres และปิด ALLOW_FIRESTORE_TO_POSTGRES_MIGRATION ใน Render';
+        document.getElementById('admin-pin').value = '';
+      } catch (error) {
+        result.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
