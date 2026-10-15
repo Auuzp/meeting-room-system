@@ -39,7 +39,16 @@ function createPostgresDb(options = {}) {
   // a later request to retry if the first connection attempt times out.
   function ensureSchema() {
     if (!schemaReady) {
-      schemaReady = nativeQuery(schema).catch((err) => {
+      schemaReady = (async () => {
+        // Use a checked-out client for schema setup so it does not call the
+        // wrapped pool.query()/pool.connect() methods while initialization is pending.
+        const client = await nativeConnect();
+        try {
+          await client.query(schema);
+        } finally {
+          client.release();
+        }
+      })().catch((err) => {
         schemaReady = null;
         console.error('[postgres] Schema initialization failed:', err.code || err.name || 'unknown');
         throw err;
@@ -51,13 +60,24 @@ function createPostgresDb(options = {}) {
     return schemaReady;
   }
 
-  pool.query = async (...args) => {
-    await ensureSchema();
-    return nativeQuery(...args);
+  pool.query = (...args) => {
+    const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+    if (callback) {
+      ensureSchema()
+        .then(() => nativeQuery(...args, callback), callback)
+        .catch(callback);
+      return;
+    }
+    return ensureSchema().then(() => nativeQuery(...args));
   };
-  pool.connect = async () => {
-    await ensureSchema();
-    return nativeConnect();
+  pool.connect = (callback) => {
+    if (typeof callback === 'function') {
+      ensureSchema()
+        .then(() => nativeConnect(callback), callback)
+        .catch(callback);
+      return;
+    }
+    return ensureSchema().then(() => nativeConnect());
   };
 
   return pool;
