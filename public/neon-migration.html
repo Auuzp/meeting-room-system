@@ -3,28 +3,197 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ย้ายฐานข้อมูลเสร็จแล้ว</title>
+  <meta name="color-scheme" content="dark">
+  <title>ตรวจสอบสถานะฐานข้อมูล</title>
   <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #10131b; color: #eef2ff; }
-    main { width: min(92vw, 520px); box-sizing: border-box; padding: 28px; border: 1px solid #303747; border-radius: 16px; background: #191e2a; }
-    h1 { margin: 0 0 10px; font-size: 1.4rem; }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10131b; color: #eef2ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+    main { width: min(100%, 560px); padding: 28px; border: 1px solid #303747; border-radius: 16px; background: #191e2a; }
+    h1 { margin: 0 0 10px; font-size: 1.45rem; }
     p { color: #bbc4d7; line-height: 1.6; }
-    .actions { display: grid; gap: 10px; margin-top: 22px; }
-    a { display: block; padding: 14px; border-radius: 10px; text-align: center; color: white; text-decoration: none; font-weight: 700; }
-    .primary { background: #4f7df3; }
-    .secondary { border: 1px solid #424b60; background: #111622; }
+    label { display: block; margin: 22px 0 8px; font-weight: 650; }
+    input { width: 100%; min-height: 46px; margin-top: 8px; padding: 10px 12px; border: 1px solid #424b60; border-radius: 9px; background: #111622; color: #fff; font: inherit; }
+    button, a.button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 10px 16px; border: 0; border-radius: 9px; background: #4f7df3; color: #fff; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    .secondary { border: 1px solid #424b60 !important; background: #111622 !important; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .notice { margin: 18px 0 0; padding: 12px 14px; border: 1px solid #424b60; border-radius: 9px; background: #111622; }
+    .notice[hidden], section[hidden], form[hidden] { display: none; }
+    .notice.success { border-color: #14875e; color: #92f0c2; }
+    .notice.error { border-color: #b64b5b; color: #ffadb7; }
+    dl { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 0; }
+    dl div { padding: 12px; border: 1px solid #303747; border-radius: 9px; background: #141925; }
+    dt { color: #aab5cc; font-size: .9rem; }
+    dd { margin: 6px 0 0; font-size: 1.1rem; font-weight: 700; overflow-wrap: anywhere; }
+    .small { margin-top: 10px; font-size: .9rem; }
+    @media (max-width: 420px) { main { padding: 20px; } dl { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <main>
-    <h1>ย้ายฐานข้อมูลเสร็จแล้ว</h1>
-    <p>ระบบใช้ฐานข้อมูล Neon เรียบร้อยแล้ว หน้านี้มีไว้สำหรับคัดลอกข้อมูลเพียงครั้งเดียวและปิดการใช้งานหลังย้ายเสร็จ</p>
-    <p>หากต้องการจัดการห้องประชุมหรือรายชื่อพนักงาน ให้เข้าสู่หน้า Admin ด้วยรหัส Admin PIN เดิมของระบบ</p>
+    <h1>ตรวจสอบสถานะฐานข้อมูล</h1>
+    <p>หน้านี้อ่านสถานะจากเซิร์ฟเวอร์โดยตรง กรุณาใส่ Admin PIN ในหน้านี้เพื่อดูผู้ให้บริการฐานข้อมูลและจำนวนข้อมูล ระบบจะไม่บันทึก PIN ไว้</p>
+
+    <form id="status-form">
+      <label for="admin-pin">Admin PIN</label>
+      <input id="admin-pin" type="password" autocomplete="current-password" required maxlength="128">
+      <div class="actions">
+        <button id="check-button" type="submit">ตรวจสอบสถานะ</button>
+      </div>
+    </form>
+
+    <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+    <section id="status-details" aria-labelledby="status-heading" hidden>
+      <h2 id="status-heading">สถานะระบบ</h2>
+      <dl>
+        <div><dt>ฐานข้อมูลที่กำลังใช้งาน</dt><dd id="provider-value">—</dd></div>
+        <div><dt>เปิดขั้นตอนย้ายข้อมูล</dt><dd id="migration-value">—</dd></div>
+        <div><dt>ตั้งค่าฐานข้อมูลปลายทางแล้ว</dt><dd id="destination-value">—</dd></div>
+        <div><dt>จำนวนข้อมูล</dt><dd id="counts-value">—</dd></div>
+      </dl>
+      <p id="migration-help" class="small"></p>
+    </section>
+
+    <form id="migration-form" hidden>
+      <label for="migration-pin">กรอก Admin PIN อีกครั้งเพื่อยืนยันการคัดลอก</label>
+      <input id="migration-pin" type="password" autocomplete="current-password" maxlength="128" required>
+      <div class="actions">
+        <button id="copy-button" type="submit">คัดลอกข้อมูลไป Neon</button>
+      </div>
+    </form>
+
+    <p id="copy-result" class="notice" role="status" aria-live="polite" hidden></p>
     <div class="actions">
-      <a class="primary" href="/admin.html">เข้าสู่หน้า Admin</a>
-      <a class="secondary" href="/">กลับหน้าหลัก</a>
+      <a class="button secondary" href="/admin.html">หน้า Admin</a>
+      <a class="button secondary" href="/">กลับหน้าหลัก</a>
     </div>
   </main>
+
+  <script>
+    const statusForm = document.getElementById('status-form');
+    const migrationForm = document.getElementById('migration-form');
+    const pinInput = document.getElementById('admin-pin');
+    const migrationPinInput = document.getElementById('migration-pin');
+    const checkButton = document.getElementById('check-button');
+    const copyButton = document.getElementById('copy-button');
+    const notice = document.getElementById('notice');
+    const details = document.getElementById('status-details');
+    const copyResult = document.getElementById('copy-result');
+    let migrationCanRun = false;
+
+    function showMessage(element, message, type) {
+      element.textContent = message;
+      element.className = 'notice' + (type ? ' ' + type : '');
+      element.hidden = false;
+    }
+
+    function formatCounts(counts) {
+      if (!counts) return 'อ่านจำนวนข้อมูลไม่ได้ในขณะนี้';
+      return 'การตั้งค่า ' + counts.settings +
+        ' · ห้อง ' + counts.rooms +
+        ' · พนักงาน ' + counts.employees +
+        ' · รายการจอง ' + counts.bookings;
+    }
+
+    async function sendAdminRequest(url, method, pin) {
+      const response = await fetch(url, {
+        method: method,
+        headers: { 'x-admin-pin': pin }
+      });
+      const raw = await response.text();
+      let data = {};
+      if (raw) {
+        try {
+          data = JSON.parse(raw);
+        } catch (_) {
+          throw new Error('เซิร์ฟเวอร์ตอบกลับไม่ครบ กรุณาลองอีกครั้ง');
+        }
+      }
+      if (!response.ok) {
+        throw new Error(data.message || 'ทำรายการไม่สำเร็จ (HTTP ' + response.status + ')');
+      }
+      return data;
+    }
+
+    function renderStatus(data) {
+      const labels = { sqlite: 'SQLite', firestore: 'Firestore', postgres: 'Neon PostgreSQL' };
+      document.getElementById('provider-value').textContent = labels[data.provider] || 'ไม่ทราบ';
+      document.getElementById('migration-value').textContent = data.migrationEnabled ? 'เปิด' : 'ปิด';
+      document.getElementById('destination-value').textContent = data.destinationConfigured ? 'ตั้งค่าแล้ว' : 'ยังไม่ตั้งค่า';
+      document.getElementById('counts-value').textContent = formatCounts(data.counts);
+
+      const help = document.getElementById('migration-help');
+      migrationCanRun = data.provider === 'firestore' && data.migrationEnabled && data.destinationConfigured;
+      migrationForm.hidden = !migrationCanRun;
+
+      if (data.provider === 'postgres') {
+        showMessage(notice, data.migrationEnabled
+          ? 'เซิร์ฟเวอร์กำลังใช้ Neon แล้ว แต่ยังเปิดขั้นตอนย้ายข้อมูลอยู่ ควรปิด ALLOW_FIRESTORE_TO_POSTGRES_MIGRATION ใน Render'
+          : 'ยืนยันจากเซิร์ฟเวอร์แล้วว่าระบบกำลังใช้ Neon PostgreSQL และปิดขั้นตอนย้ายข้อมูลแล้ว', data.migrationEnabled ? '' : 'success');
+        help.textContent = data.counts
+          ? 'จำนวนด้านบนอ่านจากฐานข้อมูลที่ระบบใช้งานอยู่ ไม่แสดงชื่อพนักงานหรือรายละเอียดการจอง'
+          : 'ยืนยันผู้ให้บริการได้ แต่ยังอ่านจำนวนรายการไม่ได้';
+      } else if (data.provider === 'firestore') {
+        if (migrationCanRun) {
+          showMessage(notice, 'ขณะนี้ระบบยังใช้ Firestore และตั้งค่าปลายทาง Neon แล้ว ตรวจจำนวนข้อมูลก่อนเริ่มคัดลอก', '');
+          help.textContent = 'การคัดลอกจะไม่ลบข้อมูลจาก Firestore เมื่อคัดลอกเสร็จ ต้องเปลี่ยน DB_PROVIDER เป็น postgres ใน Render จึงจะเริ่มใช้ Neon';
+        } else {
+          showMessage(notice, 'ขณะนี้ระบบยังใช้ Firestore จึงยังไม่ได้เปลี่ยนมาใช้ Neon', '');
+          help.textContent = data.migrationEnabled
+            ? 'ขั้นตอนย้ายเปิดอยู่ แต่ยังไม่พบ DATABASE_URL ในการตั้งค่าของเซิร์ฟเวอร์'
+            : 'ขั้นตอนย้ายข้อมูลถูกปิดไว้';
+        }
+      } else {
+        showMessage(notice, 'เซิร์ฟเวอร์กำลังใช้ SQLite ไม่ใช่ Neon หรือ Firestore', '');
+        help.textContent = 'การย้ายข้อมูลจาก Firestore ไป Neon ใช้ได้เมื่อระบบกำลังใช้ Firestore เท่านั้น';
+      }
+      details.hidden = false;
+    }
+
+    statusForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      const pin = pinInput.value.trim();
+      pinInput.value = '';
+      if (!pin) return;
+      checkButton.disabled = true;
+      details.hidden = true;
+      migrationForm.hidden = true;
+      copyResult.hidden = true;
+      showMessage(notice, 'กำลังตรวจสอบสถานะจากเซิร์ฟเวอร์…', '');
+      try {
+        const data = await sendAdminRequest('/api/admin/database/migration-status', 'GET', pin);
+        renderStatus(data);
+      } catch (error) {
+        showMessage(notice, error.message || 'ตรวจสอบสถานะไม่สำเร็จ', 'error');
+      } finally {
+        checkButton.disabled = false;
+      }
+    });
+
+    migrationForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      if (!migrationCanRun) return;
+      const pin = migrationPinInput.value.trim();
+      migrationPinInput.value = '';
+      if (!pin) return;
+      if (!window.confirm('ยืนยันคัดลอกข้อมูล Firestore ไป Neon? ข้อมูลต้นทางจะยังคงอยู่')) return;
+
+      copyButton.disabled = true;
+      showMessage(copyResult, 'กำลังคัดลอกและตรวจสอบข้อมูล กรุณารอสักครู่…', '');
+      try {
+        const result = await sendAdminRequest('/api/admin/database/migrate-firestore-to-postgres', 'POST', pin);
+        if (result.verified !== true) throw new Error('ระบบยังยืนยันความถูกต้องของข้อมูลปลายทางไม่ได้');
+        showMessage(copyResult,
+          'คัดลอกและตรวจสอบข้อมูลแล้ว (' + formatCounts(result.counts) + ') ข้อมูล Firestore ต้นทางยังคงอยู่ หลังจากนี้ให้เปลี่ยน DB_PROVIDER เป็น postgres และปิดขั้นตอนย้ายข้อมูลใน Render',
+          'success');
+      } catch (error) {
+        showMessage(copyResult, error.message || 'ย้ายข้อมูลไม่สำเร็จ', 'error');
+      } finally {
+        copyButton.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>

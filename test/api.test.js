@@ -482,6 +482,25 @@ async function runTests() {
     const noAuthRoom = await request('POST', '/api/rooms', { name: 'ห้องลับ' });
     assert(noAuthRoom.status === 401, 'Denies POST /api/rooms without credentials (401)');
 
+    // Migration status is Admin-only and returns counts/configuration, never booking or employee records.
+    const noAuthMigrationStatus = await request('GET', '/api/admin/database/migration-status');
+    assert(noAuthMigrationStatus.status === 401, 'Denies database migration status without Admin PIN (401)');
+
+    const queryPinMigrationStatus = await request('GET', `/api/admin/database/migration-status?admin_pin=${adminPin}`);
+    assert(queryPinMigrationStatus.status === 400, 'Rejects Admin PIN in migration status query string (400)');
+
+    const migrationStatus = await request('GET', '/api/admin/database/migration-status', null, { 'x-admin-pin': adminPin });
+    assert(migrationStatus.status === 200, 'Returns live database status with valid Admin PIN (200)');
+    assert(
+      migrationStatus.body.provider === 'sqlite' &&
+      migrationStatus.body.migrationEnabled === false &&
+      typeof migrationStatus.body.destinationConfigured === 'boolean' &&
+      migrationStatus.body.counts &&
+      ['settings', 'rooms', 'employees', 'bookings'].every((key) => Number.isInteger(migrationStatus.body.counts[key])) &&
+      !JSON.stringify(migrationStatus.body).includes('EMP101'),
+      'Status reports provider and record counts without exposing records'
+    );
+
     // Reject admin credentials in query string
     const queryAdmin = await request('GET', `/api/admin/employees?admin_pin=${adminPin}`);
     assert(queryAdmin.status === 400, 'Rejects admin PIN sent via query string (400)');

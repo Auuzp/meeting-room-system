@@ -869,6 +869,42 @@ app.post('/api/admin/database/migrate-firestore-to-postgres', requireAdminAuth, 
   }
 });
 
+
+// Admin-only live database status. The static page must not claim migration completed
+// unless the running server reports its configured provider.
+app.get('/api/admin/database/migration-status', requireAdminAuth, async (req, res) => {
+  let counts = null;
+  try {
+    const [settings, rooms, employees, bookings] = await Promise.all([
+      settingsRepo.getAll(),
+      roomsRepo.getAll(false),
+      employeesRepo.getAll(),
+      bookingsRepo.getAll({})
+    ]);
+    counts = {
+      settings: Object.keys(settings || {}).length,
+      rooms: Array.isArray(rooms) ? rooms.length : 0,
+      employees: Array.isArray(employees) ? employees.length : 0,
+      bookings: Array.isArray(bookings) ? bookings.length : 0
+    };
+  } catch (err) {
+    // Provider identity is still useful if the source is temporarily unreadable (for example,
+    // Firestore quota exhaustion). Do not expose records or provider errors to the client.
+    console.error('[database-migration-status] Could not read record counts:', {
+      code: err && err.code,
+      name: err && err.name
+    });
+  }
+
+  res.json({
+    success: true,
+    provider: dbProvider,
+    migrationEnabled: process.env.ALLOW_FIRESTORE_TO_POSTGRES_MIGRATION === 'true',
+    destinationConfigured: Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim()),
+    counts
+  });
+});
+
 // ----------------------------------------------------
 // BOOKINGS API
 // ----------------------------------------------------
