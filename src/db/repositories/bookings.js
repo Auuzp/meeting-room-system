@@ -117,6 +117,144 @@ function createBookingsRepository(db, provider = 'sqlite') {
     };
   }
 
+  if (provider === 'postgres') {
+    const bookingColumns = 'b.id, b.room_id, b.emp_code, b.title, b.booked_by, b.department, b.start_at, b.end_at, b.note, b.pin, b.status, b.created_at, b.updated_at';
+    return {
+      async findConflict(roomId, startAt, endAt, excludeBookingId = null) {
+        const params = [Number(roomId), endAt, startAt];
+        let query = 'SELECT ' + bookingColumns + ', r.name AS room_name FROM bookings b JOIN rooms r ON r.id=b.room_id WHERE b.room_id=$1 AND b.status=\'confirmed\' AND b.start_at < $2 AND b.end_at > $3';
+        if (excludeBookingId) {
+          params.push(Number(excludeBookingId));
+          query += ' AND b.id <> $4';
+        }
+        query += ' LIMIT 1';
+        const result = await db.query(query, params);
+        return result.rows[0] || null;
+      },
+      async getById(id) {
+        const result = await db.query(
+          'SELECT id, room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin, status, created_at, updated_at FROM bookings WHERE id=$1',
+          [Number(id)]
+        );
+        return result.rows[0] || null;
+      },
+      async getAll(filter = {}) {
+        const params = [];
+        const where = [];
+        if (filter.date) {
+          params.push(String(filter.date) + '%');
+          const startParam = '$' + params.length;
+          params.push(String(filter.date) + '%');
+          where.push('(b.start_at LIKE ' + startParam + ' OR b.end_at LIKE $' + params.length + ')');
+        }
+        if (filter.room_id) {
+          params.push(Number(filter.room_id));
+          where.push('b.room_id=$' + params.length);
+        }
+        if (filter.status) {
+          params.push(filter.status);
+          where.push('b.status=$' + params.length);
+        }
+        if (filter.start_date) {
+          params.push(filter.start_date);
+          where.push('b.start_at >= ($' + params.length + '::date)::text');
+        }
+        if (filter.end_date) {
+          params.push(filter.end_date);
+          where.push('b.start_at < ($' + params.length + '::date + 1)::text');
+        }
+        const result = await db.query(
+          'SELECT ' + bookingColumns + ', r.name AS room_name, r.code AS room_code, r.color AS room_color, r.location AS room_location FROM bookings b JOIN rooms r ON r.id=b.room_id' +
+          (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY b.start_at ASC',
+          params
+        );
+        return result.rows;
+      },
+      async createAtomic(bookingData) {
+        const client = await db.connect();
+        try {
+          await client.query('BEGIN');
+          const roomResult = await client.query('SELECT id, name, is_active FROM rooms WHERE id=$1 FOR UPDATE', [Number(bookingData.room_id)]);
+          const room = roomResult.rows[0];
+          if (!room || Number(room.is_active) === 0) {
+            const err = new Error('ไม่พบห้องประชุม หรือห้องประชุมถูกปิดใช้งาน');
+            err.status = 400;
+            throw err;
+          }
+          const conflictResult = await client.query(
+            'SELECT id, title, booked_by, department, start_at, end_at FROM bookings WHERE room_id=$1 AND status=\'confirmed\' AND start_at < $2 AND end_at > $3 LIMIT 1',
+            [Number(bookingData.room_id), bookingData.end_at, bookingData.start_at]
+          );
+          if (conflictResult.rows[0]) {
+            const conflict = { ...conflictResult.rows[0], room_name: room.name };
+            const err = new Error('⛔ ไม่สามารถจองซ้ำได้! ห้อง ' + room.name + ' ถูกจองแล้วในช่วงเวลาดังกล่าว');
+            err.status = 409;
+            err.conflict = conflict;
+            throw err;
+          }
+          const result = await client.query(
+            'INSERT INTO bookings (room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,\'confirmed\') RETURNING id, room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin, status, created_at, updated_at',
+            [Number(bookingData.room_id), bookingData.emp_code || '', bookingData.title, bookingData.booked_by, bookingData.department || '', bookingData.start_at, bookingData.end_at, bookingData.note || '', bookingData.pin]
+          );
+          await client.query('COMMIT');
+          return result.rows[0];
+        } catch (err) {
+          try { await client.query('ROLLBACK'); } catch (_) {}
+          throw err;
+        } finally {
+          client.release();
+        }
+      },
+      async updateAtomic(id, bookingData) {
+        const client = await db.connect();
+        try {
+          await client.query('BEGIN');
+          const existingResult = await client.query('SELECT id FROM bookings WHERE id=$1 FOR UPDATE', [Number(id)]);
+          if (!existingResult.rows[0]) {
+            await client.query('COMMIT');
+            return null;
+          }
+          const roomResult = await client.query('SELECT id, name, is_active FROM rooms WHERE id=$1 FOR UPDATE', [Number(bookingData.room_id)]);
+          const room = roomResult.rows[0];
+          if (!room || Number(room.is_active) === 0) {
+            const err = new Error('ไม่พบห้องประชุม หรือห้องประชุมถูกปิดใช้งาน');
+            err.status = 400;
+            throw err;
+          }
+          const conflictResult = await client.query(
+            'SELECT id, title, booked_by, department, start_at, end_at FROM bookings WHERE room_id=$1 AND status=\'confirmed\' AND start_at < $2 AND end_at > $3 AND id<>$4 LIMIT 1',
+            [Number(bookingData.room_id), bookingData.end_at, bookingData.start_at, Number(id)]
+          );
+          if (conflictResult.rows[0]) {
+            const err = new Error('⛔ ไม่สามารถจองซ้ำได้! ห้อง ' + room.name + ' ถูกจองแล้วในช่วงเวลาดังกล่าว');
+            err.status = 409;
+            err.conflict = { ...conflictResult.rows[0], room_name: room.name };
+            throw err;
+          }
+          await client.query(
+            'UPDATE bookings SET room_id=$1, title=$2, start_at=$3, end_at=$4, note=$5, updated_at=$6 WHERE id=$7',
+            [Number(bookingData.room_id), bookingData.title, bookingData.start_at, bookingData.end_at, bookingData.note || '', new Date().toISOString(), Number(id)]
+          );
+          const updated = await client.query('SELECT id, room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin, status, created_at, updated_at FROM bookings WHERE id=$1', [Number(id)]);
+          await client.query('COMMIT');
+          return updated.rows[0];
+        } catch (err) {
+          try { await client.query('ROLLBACK'); } catch (_) {}
+          throw err;
+        } finally {
+          client.release();
+        }
+      },
+      async cancel(id) {
+        const result = await db.query(
+          "UPDATE bookings SET status='cancelled', updated_at=$1 WHERE id=$2 RETURNING id, room_id, emp_code, title, booked_by, department, start_at, end_at, note, pin, status, created_at, updated_at",
+          [new Date().toISOString(), Number(id)]
+        );
+        return result.rows[0] || null;
+      }
+    };
+  }
+
   // Firestore provider
   async function getNextId(transaction, colName = 'bookings') {
     const counterRef = db.collection('_counters').doc(colName);
