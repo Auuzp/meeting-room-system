@@ -49,6 +49,53 @@ function createEmployeesRepository(db, provider = 'sqlite') {
     };
   }
 
+  if (provider === 'postgres') {
+    return {
+      async getAll() {
+        const result = await db.query('SELECT id, emp_code, name, department, position, is_active, created_at, updated_at FROM employees ORDER BY id DESC');
+        return result.rows;
+      },
+      async getById(id) {
+        const result = await db.query('SELECT id, emp_code, name, department, position, is_active, created_at, updated_at FROM employees WHERE id=$1', [Number(id)]);
+        return result.rows[0] || null;
+      },
+      async getByCode(code, excludeId = null) {
+        if (!code) return null;
+        const result = await db.query(
+          'SELECT id, emp_code, name, department, position, is_active, created_at, updated_at FROM employees WHERE UPPER(emp_code)=UPPER($1) AND ($2::bigint IS NULL OR id<>$2) LIMIT 1',
+          [code, excludeId ? Number(excludeId) : null]
+        );
+        return result.rows[0] || null;
+      },
+      async findByKeyword(keyword) {
+        if (!keyword) return null;
+        const clean = keyword.trim();
+        const result = await db.query(
+          'SELECT id, emp_code, name, department, position, is_active, created_at, updated_at FROM employees WHERE UPPER(emp_code)=UPPER($1) OR name ILIKE $2 LIMIT 1',
+          [clean, '%' + clean + '%']
+        );
+        return result.rows[0] || null;
+      },
+      async create(data) {
+        const result = await db.query(
+          'INSERT INTO employees (emp_code, name, department, position, is_active) VALUES ($1,$2,$3,$4,1) RETURNING id, emp_code, name, department, position, is_active, created_at, updated_at',
+          [data.emp_code, data.name, data.department, data.position || '']
+        );
+        return result.rows[0];
+      },
+      async update(id, data) {
+        await db.query(
+          'UPDATE employees SET emp_code=$1, name=$2, department=$3, position=$4, is_active=$5, updated_at=$6 WHERE id=$7',
+          [data.emp_code, data.name, data.department, data.position || '', data.is_active, new Date().toISOString(), Number(id)]
+        );
+        return this.getById(id);
+      },
+      async delete(id) {
+        await db.query('DELETE FROM employees WHERE id=$1', [Number(id)]);
+      }
+    };
+  }
+
   // Firestore provider
   async function getNextId(colName = 'employees') {
     const counterRef = db.collection('_counters').doc(colName);
