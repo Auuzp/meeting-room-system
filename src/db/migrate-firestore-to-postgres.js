@@ -67,8 +67,7 @@ function normalizeRows(snapshot) {
     return {
       key: doc.id,
       value: doc.data.value,
-      updated_at: timestampValue(doc.data.updated_at),
-      source_data: doc.data
+      updated_at: timestampValue(doc.data.updated_at)
     };
   });
 
@@ -87,8 +86,7 @@ function normalizeRows(snapshot) {
       amenities,
       is_active: activeValue(data.is_active),
       created_at: timestampValue(data.created_at),
-      updated_at: timestampValue(data.updated_at),
-      source_data: data
+      updated_at: timestampValue(data.updated_at)
     };
   });
 
@@ -102,8 +100,7 @@ function normalizeRows(snapshot) {
       position: data.position || '',
       is_active: activeValue(data.is_active),
       created_at: timestampValue(data.created_at),
-      updated_at: timestampValue(data.updated_at),
-      source_data: data
+      updated_at: timestampValue(data.updated_at)
     };
   });
 
@@ -122,8 +119,7 @@ function normalizeRows(snapshot) {
       pin: data.pin || null,
       status: data.status || 'confirmed',
       created_at: timestampValue(data.created_at),
-      updated_at: timestampValue(data.updated_at),
-      source_data: data
+      updated_at: timestampValue(data.updated_at)
     };
   });
 
@@ -143,7 +139,17 @@ function normalizeRows(snapshot) {
   rooms.sort((a, b) => a.id - b.id);
   employees.sort((a, b) => a.id - b.id);
   bookings.sort((a, b) => a.id - b.id);
-  return { settings, rooms, employees, bookings };
+  const counters = snapshot.counters.map((doc) => ({ id: doc.id, data: doc.data }));
+  return { settings, rooms, employees, bookings, counters };
+}
+
+function recordCounts(rows) {
+  return {
+    settings: rows.settings.length,
+    rooms: rows.rooms.length,
+    employees: rows.employees.length,
+    bookings: rows.bookings.length
+  };
 }
 
 function publicSettings(row) {
@@ -265,7 +271,7 @@ async function migrateFirestoreToPostgres(firestore, pool) {
         await client.query('COMMIT');
         return {
           alreadyMigrated: true,
-          counts: Object.fromEntries(Object.entries(rows).map(([key, table]) => [key, table.length]))
+          counts: recordCounts(rows)
         };
       }
       throw new Error('The Neon database is not empty or its records differ; migration stopped to protect existing data');
