@@ -286,7 +286,7 @@ async function migrateFirestoreToPostgres(firestore, pool) {
     await client.query('COMMIT');
     return {
       alreadyMigrated: false,
-      counts: Object.fromEntries(Object.entries(rows).map(([key, table]) => [key, table.length]))
+      counts: recordCounts(rows)
     };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
