@@ -61,6 +61,58 @@ function createRoomsRepository(db, provider = 'sqlite') {
     };
   }
 
+  if (provider === 'postgres') {
+    return {
+      async getAll(activeOnly = true) {
+        const result = await db.query(
+          'SELECT id, code, name, capacity, location, color, amenities, is_active, created_at, updated_at FROM rooms' +
+          (activeOnly ? ' WHERE is_active = 1' : '') + ' ORDER BY id ASC'
+        );
+        return result.rows;
+      },
+      async getById(id, activeOnly = false) {
+        const result = await db.query(
+          'SELECT id, code, name, capacity, location, color, amenities, is_active, created_at, updated_at FROM rooms WHERE id = $1' +
+          (activeOnly ? ' AND is_active = 1' : ''),
+          [Number(id)]
+        );
+        return result.rows[0] || null;
+      },
+      async getByCode(code, excludeId = null) {
+        if (!code) return null;
+        const result = await db.query(
+          'SELECT id FROM rooms WHERE UPPER(code) = UPPER($1) AND ($2::bigint IS NULL OR id <> $2)',
+          [code, excludeId ? Number(excludeId) : null]
+        );
+        return result.rows[0] || null;
+      },
+      async getByNameOrCode(name, code) {
+        const result = await db.query(
+          'SELECT id, code, name, capacity, location, color, amenities, is_active, created_at, updated_at FROM rooms WHERE is_active = 1 AND (($1 <> \'\' AND name = $1) OR ($2 <> \'\' AND code = $2)) LIMIT 1',
+          [name || '', code || '']
+        );
+        return result.rows[0] || null;
+      },
+      async create(roomData) {
+        const result = await db.query(
+          "INSERT INTO rooms (code, name, capacity, location, color, amenities, is_active) VALUES ($1,$2,$3,$4,$5,$6,1) RETURNING id, code, name, capacity, location, color, amenities, is_active, created_at, updated_at",
+          [roomData.code || '', roomData.name, roomData.capacity || 10, roomData.location || '', roomData.color || '#ff6a00', roomData.amenities || '[]']
+        );
+        return result.rows[0];
+      },
+      async update(id, roomData) {
+        await db.query(
+          'UPDATE rooms SET code=$1, name=$2, capacity=$3, location=$4, color=$5, amenities=$6, updated_at=$7 WHERE id=$8',
+          [roomData.code, roomData.name, roomData.capacity, roomData.location, roomData.color, roomData.amenities, new Date().toISOString(), Number(id)]
+        );
+        return this.getById(id);
+      },
+      async deactivate(id) {
+        await db.query('UPDATE rooms SET is_active=0, updated_at=$1 WHERE id=$2', [new Date().toISOString(), Number(id)]);
+      }
+    };
+  }
+
   // Firestore provider
   async function getNextId(transaction, colName = 'rooms') {
     const counterRef = db.collection('_counters').doc(colName);
